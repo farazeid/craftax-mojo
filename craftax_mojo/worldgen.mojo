@@ -7,6 +7,7 @@
 # order: water angles, mountain angles, path angles, coal/iron/diamond
 # uniforms, tree angles, tree uniforms, diamond position.
 
+from std.memory import Pointer
 from std.math import cos, sin, floor
 
 from .constants import *
@@ -31,46 +32,95 @@ def _fade(t: Float32) -> Float32:
     return t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
 
 
-struct Perlin[R0: Int, R1: Int](Copyable):
-    """Gradients of a (R0+1) x (R1+1) Perlin lattice over a 64x64 map."""
+# ---- Random draw layout ----------------------------------------------------
+# JAX draws, in order: water angles (5x5), mountain angles (5x5), path angles
+# (9x33), coal/iron/diamond uniforms (64x64 each), tree angles (17x17), tree
+# uniforms (64x64), then the diamond position. The array draws are reserved
+# as one contiguous block; these are offsets into it.
+comptime D_WATER = 0
+comptime D_MOUNTAIN = D_WATER + 25
+comptime D_PATH = D_MOUNTAIN + 25
+comptime D_COAL = D_PATH + 9 * 33
+comptime D_IRON = D_COAL + MAP_CELLS
+comptime D_DIAMOND = D_IRON + MAP_CELLS
+comptime D_TREE = D_DIAMOND + MAP_CELLS
+comptime D_TREE_U = D_TREE + 17 * 17
+comptime D_TOTAL = D_TREE_U + MAP_CELLS
 
-    comptime G = (Self.R0 + 1) * (Self.R1 + 1)
-    var c: Array[Float32, Self.G]
-    var s: Array[Float32, Self.G]
+# Gradient table (cos, sin interleaved) offsets for the four noise fields.
+comptime T_WATER = 0
+comptime T_MOUNTAIN = T_WATER + 25
+comptime T_PATH = T_MOUNTAIN + 25
+comptime T_TREE = T_PATH + 9 * 33
+comptime T_SIZE = T_TREE + 17 * 17  # 636 entries
 
-    def __init__[R: Rng](out self, mut rng: R):
-        self.c = Array[Float32, Self.G](fill=0)
-        self.s = Array[Float32, Self.G](fill=0)
-        var base = rng.reserve(Self.G)
-        for k in range(Self.G):
-            var a = TWO_PI * rng.at(base, k)
-            self.c[k] = cos(a)
-            self.s[k] = sin(a)
 
-    @inline(.always)
-    def raw(self, i: Int, j: Int) -> Float32:
-        comptime d0 = MAP_W // Self.R0
-        comptime d1 = MAP_H // Self.R1
-        var gx = Float32(i) * (Float32(Self.R0) / Float32(MAP_W))
-        var gy = Float32(j) * (Float32(Self.R1) / Float32(MAP_H))
-        gx = gx - floor(gx)
-        gy = gy - floor(gy)
-        var a = i // d0
-        var b = j // d1
-        comptime W = Self.R1 + 1
-        var k00 = a * W + b
-        var k10 = (a + 1) * W + b
-        var k01 = a * W + b + 1
-        var k11 = (a + 1) * W + b + 1
-        var n00 = gx * self.c[k00] + gy * self.s[k00]
-        var n10 = (gx - 1.0) * self.c[k10] + gy * self.s[k10]
-        var n01 = gx * self.c[k01] + (gy - 1.0) * self.s[k01]
-        var n11 = (gx - 1.0) * self.c[k11] + (gy - 1.0) * self.s[k11]
-        var tx = _fade(gx)
-        var ty = _fade(gy)
-        var n0 = n00 * (1.0 - tx) + tx * n10
-        var n1 = n01 * (1.0 - tx) + tx * n11
-        return SQRT2 * ((1.0 - ty) * n0 + ty * n1)
+@inline(.always)
+def table_draw(k: Int) -> Int:
+    """Offset of the angle draw for gradient-table entry k."""
+    if k < T_TREE:
+        return k  # water, mountain, path are contiguous at the start
+    return D_TREE + (k - T_TREE)
+
+
+@inline(.always)
+def fill_table_entry[R: Rng](
+    rng: R, start: Int, k: Int, tab: Pointer[Float32, MutUntrackedOrigin]
+):
+    var a = TWO_PI * rng.at(start, table_draw(k))
+    tab[unsafe_offset = 2 * k] = cos(a)
+    tab[unsafe_offset = 2 * k + 1] = sin(a)
+
+
+@inline(.always)
+def perlin_raw[R0: Int, R1: Int](
+    tab: Pointer[Float32, MutUntrackedOrigin], i: Int, j: Int
+) -> Float32:
+    """Unnormalised octave-1 Perlin noise at cell (i, j) (noise.py)."""
+    comptime d0 = MAP_W // R0
+    comptime d1 = MAP_H // R1
+    comptime W = R1 + 1
+    var gx = Float32(i) * (Float32(R0) / Float32(MAP_W))
+    var gy = Float32(j) * (Float32(R1) / Float32(MAP_H))
+    gx = gx - floor(gx)
+    gy = gy - floor(gy)
+    var a = i // d0
+    var b = j // d1
+    var k00 = 2 * (a * W + b)
+    var k10 = 2 * ((a + 1) * W + b)
+    var k01 = 2 * (a * W + b + 1)
+    var k11 = 2 * ((a + 1) * W + b + 1)
+    var n00 = gx * tab[unsafe_offset=k00] + gy * tab[unsafe_offset = k00 + 1]
+    var n10 = (gx - 1.0) * tab[unsafe_offset=k10] + gy * tab[unsafe_offset = k10 + 1]
+    var n01 = gx * tab[unsafe_offset=k01] + (gy - 1.0) * tab[unsafe_offset = k01 + 1]
+    var n11 = (gx - 1.0) * tab[unsafe_offset=k11] + (gy - 1.0) * tab[
+        unsafe_offset = k11 + 1
+    ]
+    var tx = _fade(gx)
+    var ty = _fade(gy)
+    var n0 = n00 * (1.0 - tx) + tx * n10
+    var n1 = n01 * (1.0 - tx) + tx * n11
+    return SQRT2 * ((1.0 - ty) * n0 + ty * n1)
+
+
+@inline(.always)
+def water_raw(tab: Pointer[Float32, MutUntrackedOrigin], i: Int, j: Int) -> Float32:
+    return perlin_raw[4, 4](tab.unsafe_offset(2 * T_WATER), i, j)
+
+
+@inline(.always)
+def mountain_raw(tab: Pointer[Float32, MutUntrackedOrigin], i: Int, j: Int) -> Float32:
+    return perlin_raw[4, 4](tab.unsafe_offset(2 * T_MOUNTAIN), i, j)
+
+
+@inline(.always)
+def path_raw(tab: Pointer[Float32, MutUntrackedOrigin], i: Int, j: Int) -> Float32:
+    return perlin_raw[8, 32](tab.unsafe_offset(2 * T_PATH), i, j)
+
+
+@inline(.always)
+def tree_raw(tab: Pointer[Float32, MutUntrackedOrigin], i: Int, j: Int) -> Float32:
+    return perlin_raw[16, 16](tab.unsafe_offset(2 * T_TREE), i, j)
 
 
 struct MinMax(Copyable):
@@ -80,6 +130,10 @@ struct MinMax(Copyable):
     def __init__(out self):
         self.lo = Float32.MAX
         self.hi = Float32.MIN
+
+    def __init__(out self, lo: Float32, hi: Float32):
+        self.lo = lo
+        self.hi = hi
 
     @inline(.always)
     def add(mut self, v: Float32):
@@ -93,67 +147,126 @@ struct MinMax(Copyable):
         return (v - self.lo) / (self.hi - self.lo)
 
 
-def generate_world[FM: Bool, R: Rng](env: EnvView[FM], mut rng: R):
-    var water = Perlin[4, 4](rng)
-    var mountain = Perlin[4, 4](rng)
-    var path = Perlin[8, 32](rng)
-    var coal_u = rng.reserve(MAP_CELLS)
-    var iron_u = rng.reserve(MAP_CELLS)
-    var diamond_u = rng.reserve(MAP_CELLS)
-    var tree = Perlin[16, 16](rng)
-    var tree_u = rng.reserve(MAP_CELLS)
-
-    var water_mm = MinMax()
-    var mountain_mm = MinMax()
-    var path_mm = MinMax()
-    var tree_mm = MinMax()
-    for x in range(MAP_W):
-        for y in range(MAP_H):
-            water_mm.add(water.raw(x, y))
-            mountain_mm.add(mountain.raw(x, y))
-            path_mm.add(path.raw(x, y))
-            tree_mm.add(tree.raw(x, y))
-
+@inline(.always)
+def cell_block[R: Rng](
+    rng: R,
+    start: Int,
+    x: Int,
+    y: Int,
+    water: Float32,
+    mountain: Float32,
+    path_x: Float32,
+    path_y: Float32,
+    tree: Float32,
+) -> Int:
+    """Block rules of generate_world for one cell, from normalised noise."""
     comptime cx = MAP_W // 2
     comptime cy = MAP_H // 2
+    var c = x * MAP_H + y
+    var prox = Float32(abs(x - cx) + abs(y - cy)) / Float32(5.0)
+    prox = min(max(prox, Float32(0.0)), Float32(1.0))
+    var w = water + prox - 1.0
+    var m = mountain + 0.05
+    m = m + prox - 1.0
+
+    var b = WATER if w > 0.7 else GRASS
+    if w < 0.75 and w > 0.6 and b != WATER:
+        b = SAND
+    if m > 0.7:
+        b = STONE
+    if m > 0.7 and path_x > 0.8:
+        b = PATH
+    if m > 0.7 and path_y > 0.8:
+        b = PATH
+    if m > 0.85 and w > 0.4:
+        b = PATH
+    if b == STONE and rng.at(start, D_COAL + c) < 0.04:
+        b = COAL
+    if b == STONE and rng.at(start, D_IRON + c) < 0.03:
+        b = IRON
+    if m > 0.8 and rng.at(start, D_DIAMOND + c) < 0.005 and b == STONE:
+        b = DIAMOND
+    var tree_gate = Float32(1.0) if tree > 0.5 else Float32(0.0)
+    if tree_gate * rng.at(start, D_TREE_U + c) > 0.8 and b == GRASS:
+        b = TREE
+    if m > 0.85 and tree > 0.7:
+        b = LAVA
+    if x == cx and y == cy:
+        b = GRASS  # the player spawns on grass
+    return b
+
+
+@inline(.always)
+def init_scalars[FM: Bool](env: EnvView[FM]):
+    for f in range(NUM_I):
+        env.si(f, 0)
+    for f in range(NUM_F):
+        env.sf(f, 0.0)
+    env.si(I_PX, MAP_W // 2)
+    env.si(I_PY, MAP_H // 2)
+    env.si(I_DIR, UP)
+    env.si(I_HEALTH, 9)
+    env.si(I_FOOD, 9)
+    env.si(I_DRINK, 9)
+    env.si(I_ENERGY, 9)
+    for k in range(2 * MAX_ARROWS):
+        env.si(I_ARROW_DIR + k, 1)
+    env.sf(F_LIGHT, calculate_light_level(0))
+
+
+def generate_world[FM: Bool, R: Rng](env: EnvView[FM], mut rng: R):
+    """Single-threaded world generation (CPU and tape replay).
+
+    Pass 1 evaluates the four noise fields once per cell into a scratch
+    buffer and accumulates their min/max; pass 2 normalises and applies the
+    block rules. path_y is path_x transposed, read back from the scratch.
+    """
+    var start = rng.reserve(D_TOTAL)
+    var scratch = List[Float32](length=2 * T_SIZE + 4 * MAP_CELLS, fill=0)
+    var tab = Pointer[Float32, MutUntrackedOrigin](
+        unsafe_from_address=Int(scratch.unsafe_ptr())
+    )
+    var raw = tab.unsafe_offset(2 * T_SIZE)
+    for k in range(T_SIZE):
+        fill_table_entry(rng, start, k, tab)
+
+    var mm_w = MinMax()
+    var mm_m = MinMax()
+    var mm_p = MinMax()
+    var mm_t = MinMax()
     for x in range(MAP_W):
         for y in range(MAP_H):
             var c = x * MAP_H + y
-            var prox = Float32(abs(x - cx) + abs(y - cy)) / Float32(5.0)
-            prox = min(max(prox, Float32(0.0)), Float32(1.0))
-            var w = water_mm.norm(water.raw(x, y)) + prox - 1.0
-            var m = mountain_mm.norm(mountain.raw(x, y)) + 0.05
-            m = m + prox - 1.0
-            var path_x = path_mm.norm(path.raw(x, y))
-            var path_y = path_mm.norm(path.raw(y, x))  # path_x.T
-            var t = tree_mm.norm(tree.raw(x, y))
+            var w = water_raw(tab, x, y)
+            var m = mountain_raw(tab, x, y)
+            var p = path_raw(tab, x, y)
+            var t = tree_raw(tab, x, y)
+            raw[unsafe_offset=c] = w
+            raw[unsafe_offset = MAP_CELLS + c] = m
+            raw[unsafe_offset = 2 * MAP_CELLS + c] = p
+            raw[unsafe_offset = 3 * MAP_CELLS + c] = t
+            mm_w.add(w)
+            mm_m.add(m)
+            mm_p.add(p)
+            mm_t.add(t)
 
-            var b = WATER if w > 0.7 else GRASS
-            if w < 0.75 and w > 0.6 and b != WATER:
-                b = SAND
-            if m > 0.7:
-                b = STONE
-            if m > 0.7 and path_x > 0.8:
-                b = PATH
-            if m > 0.7 and path_y > 0.8:
-                b = PATH
-            if m > 0.85 and w > 0.4:
-                b = PATH
-            if b == STONE and rng.at(coal_u, c) < 0.04:
-                b = COAL
-            if b == STONE and rng.at(iron_u, c) < 0.03:
-                b = IRON
-            if m > 0.8 and rng.at(diamond_u, c) < 0.005 and b == STONE:
-                b = DIAMOND
-            var tree_gate = Float32(1.0) if t > 0.5 else Float32(0.0)
-            if tree_gate * rng.at(tree_u, c) > 0.8 and b == GRASS:
-                b = TREE
-            if m > 0.85 and t > 0.7:
-                b = LAVA
+    for x in range(MAP_W):
+        for y in range(MAP_H):
+            var c = x * MAP_H + y
+            var b = cell_block(
+                rng,
+                start,
+                x,
+                y,
+                mm_w.norm(raw[unsafe_offset=c]),
+                mm_m.norm(raw[unsafe_offset = MAP_CELLS + c]),
+                mm_p.norm(raw[unsafe_offset = 2 * MAP_CELLS + c]),
+                mm_p.norm(raw[unsafe_offset = 2 * MAP_CELLS + y * MAP_H + x]),
+                mm_t.norm(raw[unsafe_offset = 3 * MAP_CELLS + c]),
+            )
             env.set_cell(c, b)
             env.set_mob_cell(c, False)
-
-    env.set_cell(cx * MAP_H + cy, GRASS)
+    _ = scratch^
 
     # always_diamond: one extra diamond on a uniformly chosen stone cell.
     var diamond_index = -1
@@ -175,18 +288,4 @@ def generate_world[FM: Bool, R: Rng](env: EnvView[FM], mut rng: R):
     if diamond_index >= 0:
         env.set_cell(diamond_index, DIAMOND)
 
-    # Scalar state.
-    for f in range(NUM_I):
-        env.si(f, 0)
-    for f in range(NUM_F):
-        env.sf(f, 0.0)
-    env.si(I_PX, cx)
-    env.si(I_PY, cy)
-    env.si(I_DIR, UP)
-    env.si(I_HEALTH, 9)
-    env.si(I_FOOD, 9)
-    env.si(I_DRINK, 9)
-    env.si(I_ENERGY, 9)
-    for k in range(2 * MAX_ARROWS):
-        env.si(I_ARROW_DIR + k, 1)
-    env.sf(F_LIGHT, calculate_light_level(0))
+    init_scalars(env)
