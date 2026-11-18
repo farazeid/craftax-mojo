@@ -2,7 +2,8 @@
 #
 #   mojo build -I . --fp-mode contract=off train/ppo_mojo.mojo -o build/ppo_mojo
 #   ./build/ppo_mojo --total-steps 5e6 [--num-envs 512] [--seed 42]
-#                    [--precision default|highest] [--out results/train/mojo.json]
+#                    [--precision default|highest] [--profile 1]
+#                    [--out results/train/mojo.json]
 
 from std.sys import argv
 
@@ -24,6 +25,8 @@ def main() raises:
             cfg.seed = UInt64(Int(String(args[i + 1])))
         elif a == "--precision":
             cfg.tf32 = String(args[i + 1]) != "highest"
+        elif a == "--profile":
+            cfg.profile = String(args[i + 1]) == "1"
         elif a == "--out":
             out_path = String(args[i + 1])
         else:

@@ -27,6 +27,7 @@ from .nn import F32P, I32P, U8P, Gemm, grid_for, BLOCK
 
 comptime U64P = Pointer[UInt64, MutUntrackedOrigin]
 comptime WIDTH = 512
+comptime ENV_BLOCK = 32
 comptime DEPTH = 4  # linear layers per network
 comptime STATS = 3 + NUM_ACHIEVEMENTS + 4  # episodes, return, length, achievements, pg, vf, ent, samples
 
@@ -47,6 +48,7 @@ struct Config(Copyable):
     var anneal: Bool
     var seed: UInt64
     var tf32: Bool
+    var profile: Bool
 
     def __init__(out self):
         self.num_envs = 512
@@ -64,6 +66,7 @@ struct Config(Copyable):
         self.anneal = True
         self.seed = 42
         self.tf32 = True
+        self.profile = False
 
     def batch_size(self) -> Int:
         return self.num_envs * self.num_steps
@@ -76,25 +79,41 @@ struct Config(Copyable):
 
 
 # ---- Parameter layout --------------------------------------------------------
+# Actor and critic have the same hidden shapes, so each hidden layer stores
+# the actor's then the critic's weights contiguously ([2, in, 512]) and the
+# two networks run as one strided-batched GEMM per layer. Weights are
+# [in, out] row-major. Order: for hidden layers 0..2: W_actor, W_critic,
+# b_actor, b_critic; then the heads: W_actor [512, 17], b_actor, W_critic
+# [512, 1], b_critic.
 
-struct Net(Copyable):
-    """Offsets of one MLP's weights ([in, out], row-major) and biases."""
-
-    var sizes: List[Int]
-    var w: List[Int]
-    var b: List[Int]
+struct Nets(Copyable):
+    var din: List[Int]  # input width of hidden layer l
+    var w: List[Int]  # hidden layer l: offset of [2, din, WIDTH]
+    var b: List[Int]  # hidden layer l: offset of [2, WIDTH]
+    var wa: Int  # actor head
+    var ba: Int
+    var wc: Int  # critic head
+    var bc: Int
     var end: Int
 
-    def __init__(out self, start: Int, din: Int, dout: Int):
-        self.sizes = [din, WIDTH, WIDTH, WIDTH, dout]
+    def __init__(out self, obs_dim: Int):
+        self.din = [obs_dim, WIDTH, WIDTH]
         self.w = List[Int]()
         self.b = List[Int]()
-        var off = start
-        for l in range(DEPTH):
+        var off = 0
+        for l in range(DEPTH - 1):
             self.w.append(off)
-            off += self.sizes[l] * self.sizes[l + 1]
+            off += 2 * self.din[l] * WIDTH
             self.b.append(off)
-            off += self.sizes[l + 1]
+            off += 2 * WIDTH
+        self.wa = off
+        off += WIDTH * NUM_ACTIONS
+        self.ba = off
+        off += NUM_ACTIONS
+        self.wc = off
+        off += WIDTH
+        self.bc = off
+        off += 1
         self.end = off
 
 
@@ -129,16 +148,15 @@ def orthogonal(mut dst: List[Float32], off: Int, rows: Int, cols: Int, scale: Fl
         dst[off + i] = Float32(q[i]) * scale
 
 
-def init_params(actor: Net, critic: Net, seed: UInt64) -> List[Float32]:
-    var p = List[Float32](length=critic.end, fill=0)
+def init_params(nets: Nets, seed: UInt64) -> List[Float32]:
+    var p = List[Float32](length=nets.end, fill=0)
     var rng = SplitMix(seed_key(seed, 0xBEEF), 0)
-    for net_i in range(2):
-        var net = actor.copy() if net_i == 0 else critic.copy()
-        for l in range(DEPTH):
-            var scale = Float32(sqrt(2.0))
-            if l == DEPTH - 1:
-                scale = 0.01 if net_i == 0 else 1.0
-            orthogonal(p, net.w[l], net.sizes[l], net.sizes[l + 1], scale, rng)
+    var gain = Float32(sqrt(2.0))
+    for l in range(DEPTH - 1):
+        for k in range(2):
+            orthogonal(p, nets.w[l] + k * nets.din[l] * WIDTH, nets.din[l], WIDTH, gain, rng)
+    orthogonal(p, nets.wa, WIDTH, NUM_ACTIONS, 0.01, rng)
+    orthogonal(p, nets.wc, WIDTH, 1, 1.0, rng)
     return p^
 
 
@@ -165,65 +183,107 @@ def u64p(b: DeviceBuffer[DType.uint64]) -> U64P:
 
 
 struct Acts(Copyable):
-    """Per-layer activations of one network for `rows` inputs."""
+    """Activations for `rows` inputs: hidden layers as [2, rows, WIDTH]
+    (actor, critic), then logits [rows, NUM_ACTIONS] and values [rows]."""
 
     var h: List[DeviceBuffer[DType.float32]]
+    var logits: DeviceBuffer[DType.float32]
+    var value: DeviceBuffer[DType.float32]
+    var rows: Int
 
-    def __init__(out self, ctx: DeviceContext, net: Net, rows: Int) raises:
+    def __init__(out self, ctx: DeviceContext, rows: Int) raises:
+        self.rows = rows
         self.h = List[DeviceBuffer[DType.float32]]()
-        for l in range(DEPTH):
-            self.h.append(ctx.enqueue_create_buffer[DType.float32](rows * net.sizes[l + 1]))
+        for _ in range(DEPTH - 1):
+            self.h.append(ctx.enqueue_create_buffer[DType.float32](2 * rows * WIDTH))
+        self.logits = ctx.enqueue_create_buffer[DType.float32](rows * NUM_ACTIONS)
+        self.value = ctx.enqueue_create_buffer[DType.float32](rows)
 
-    def ptr(self, l: Int) -> F32P:
+    def hidden(self, l: Int) -> F32P:
         return fp(self.h[l])
+
+    def critic_hidden(self, l: Int) -> F32P:
+        return fp(self.h[l]).unsafe_offset(self.rows * WIDTH)
 
 
 def forward(
-    ctx: DeviceContext, gemm: Gemm, params: F32P, net: Net, x: F32P, rows: Int,
-    acts: Acts,
+    ctx: DeviceContext, gemm: Gemm, params: F32P, nets: Nets, x: F32P, acts: Acts
 ) raises:
-    var inp = x
-    for l in range(DEPTH):
-        var dst = acts.ptr(l)
-        var din = net.sizes[l]
-        var dout = net.sizes[l + 1]
-        gemm(ctx, dst, inp, params.unsafe_offset(net.w[l]), rows, dout, din)
-        ctx.enqueue_function[nn.bias_act_kernel](
-            dst, params.unsafe_offset(net.b[l]), Int32(rows), Int32(dout),
-            Int32(1) if l < DEPTH - 1 else Int32(0),
-            grid_dim=grid_for(rows * dout), block_dim=BLOCK,
+    """Actor logits and critic values for x [rows, obs_dim]."""
+    var rows = acts.rows
+    var rw = rows * WIDTH
+    for l in range(DEPTH - 1):
+        var din = nets.din[l]
+        var inp = x if l == 0 else acts.hidden(l - 1)
+        gemm(
+            ctx, acts.hidden(l), inp, params.unsafe_offset(nets.w[l]), rows, WIDTH, din,
+            batch=2, stride_a=0 if l == 0 else rw, stride_b=din * WIDTH, stride_c=rw,
         )
-        inp = dst
+        ctx.enqueue_function[nn.bias_act_batched_kernel](
+            acts.hidden(l), params.unsafe_offset(nets.b[l]), Int32(rows), Int32(WIDTH),
+            Int32(2), Int32(1), grid_dim=grid_for(2 * rw), block_dim=BLOCK,
+        )
+    var last = DEPTH - 2
+    gemm(ctx, fp(acts.logits), acts.hidden(last), params.unsafe_offset(nets.wa), rows, NUM_ACTIONS, WIDTH)
+    ctx.enqueue_function[nn.bias_act_kernel](
+        fp(acts.logits), params.unsafe_offset(nets.ba), Int32(rows), Int32(NUM_ACTIONS),
+        Int32(0), grid_dim=grid_for(rows * NUM_ACTIONS), block_dim=BLOCK,
+    )
+    gemm(ctx, fp(acts.value), acts.critic_hidden(last), params.unsafe_offset(nets.wc), rows, 1, WIDTH)
+    ctx.enqueue_function[nn.bias_act_kernel](
+        fp(acts.value), params.unsafe_offset(nets.bc), Int32(rows), Int32(1),
+        Int32(0), grid_dim=grid_for(rows), block_dim=BLOCK,
+    )
 
 
 def backward(
-    ctx: DeviceContext, gemm: Gemm, params: F32P, grads: F32P, net: Net,
-    x: F32P, rows: Int, acts: Acts, dout_buf: F32P, dh_a: F32P, dh_b: F32P,
+    ctx: DeviceContext, gemm: Gemm, params: F32P, grads: F32P, nets: Nets,
+    x: F32P, acts: Acts, dlogits: F32P, dvalue: F32P, dh_a: F32P, dh_b: F32P,
+    ones: F32P,
 ) raises:
-    """Gradients of a scalar loss given d loss / d output in dout_buf."""
-    var dz = dout_buf
-    var spare = dh_a
-    for l in range(DEPTH - 1, -1, -1):
-        var din = net.sizes[l]
-        var dout = net.sizes[l + 1]
-        var inp = x if l == 0 else acts.ptr(l - 1)
-        # dW = inp^T dz ; db = colsum(dz)
-        gemm(ctx, grads.unsafe_offset(net.w[l]), inp, dz, din, dout, rows, trans_a=True)
-        ctx.enqueue_function[nn.colsum_kernel](
-            grads.unsafe_offset(net.b[l]), dz, Int32(rows), Int32(dout),
-            grid_dim=dout, block_dim=BLOCK,
+    """Parameter gradients given d loss / d logits and d loss / d values.
+    dh_a, dh_b are [2, rows, WIDTH] scratch; `ones` holds `rows` 1.0s (bias
+    gradients are ones^T dz)."""
+    var rows = acts.rows
+    var rw = rows * WIDTH
+    var last = DEPTH - 2
+    # Heads.
+    gemm(ctx, grads.unsafe_offset(nets.wa), acts.hidden(last), dlogits, WIDTH, NUM_ACTIONS, rows, trans_a=True)
+    gemm(ctx, grads.unsafe_offset(nets.ba), ones, dlogits, 1, NUM_ACTIONS, rows)
+    gemm(ctx, grads.unsafe_offset(nets.wc), acts.critic_hidden(last), dvalue, WIDTH, 1, rows, trans_a=True)
+    gemm(ctx, grads.unsafe_offset(nets.bc), ones, dvalue, 1, 1, rows)
+    gemm(ctx, dh_a, dlogits, params.unsafe_offset(nets.wa), rows, WIDTH, NUM_ACTIONS, trans_b=True)
+    gemm(ctx, dh_a.unsafe_offset(rw), dvalue, params.unsafe_offset(nets.wc), rows, WIDTH, 1, trans_b=True)
+    ctx.enqueue_function[nn.tanh_bwd_kernel](
+        dh_a, acts.hidden(last), Int32(2 * rw), grid_dim=grid_for(2 * rw), block_dim=BLOCK,
+    )
+    # Hidden layers, both networks per GEMM.
+    var dz = dh_a
+    var spare = dh_b
+    for l in range(DEPTH - 2, -1, -1):
+        var din = nets.din[l]
+        var inp = x if l == 0 else acts.hidden(l - 1)
+        var s_in = 0 if l == 0 else rw
+        gemm(
+            ctx, grads.unsafe_offset(nets.w[l]), inp, dz, din, WIDTH, rows, trans_a=True,
+            batch=2, stride_a=s_in, stride_b=rw, stride_c=din * WIDTH,
+        )
+        gemm(
+            ctx, grads.unsafe_offset(nets.b[l]), ones, dz, 1, WIDTH, rows,
+            batch=2, stride_a=0, stride_b=rw, stride_c=WIDTH,
         )
         if l == 0:
             break
-        # d inp = dz W^T, then through tanh
-        var dh = spare
-        gemm(ctx, dh, dz, params.unsafe_offset(net.w[l]), rows, din, dout, trans_b=True)
-        ctx.enqueue_function[nn.tanh_bwd_kernel](
-            dh, acts.ptr(l - 1), Int32(rows * din),
-            grid_dim=grid_for(rows * din), block_dim=BLOCK,
+        gemm(
+            ctx, spare, dz, params.unsafe_offset(nets.w[l]), rows, WIDTH, WIDTH, trans_b=True,
+            batch=2, stride_a=rw, stride_b=WIDTH * WIDTH, stride_c=rw,
         )
-        spare = dh_b if dh == dh_a else dh_a
-        dz = dh
+        ctx.enqueue_function[nn.tanh_bwd_kernel](
+            spare, acts.hidden(l - 1), Int32(2 * rw), grid_dim=grid_for(2 * rw), block_dim=BLOCK,
+        )
+        var t = dz
+        dz = spare
+        spare = t
 
 
 struct Optimizer:
@@ -257,8 +317,9 @@ struct Optimizer:
         self.count += 1
         var b1: Float32 = 0.9
         var b2: Float32 = 0.999
-        var bc1 = Float32(1.0 - Float64(b1) ** Float64(self.count))
-        var bc2 = Float32(1.0 - Float64(b2) ** Float64(self.count))
+        # float32, like optax's bias_correction (1 - decay**count)
+        var bc1 = Float32(1.0) - b1 ** Float32(self.count)
+        var bc2 = Float32(1.0) - b2 ** Float32(self.count)
         ctx.enqueue_function[nn.adam_kernel](
             fp(self.p), fp(self.g), fp(self.m), fp(self.v), Int32(self.n),
             fp(self.sumsq), max_norm, lr, b1, b2, Float32(1e-5), bc1, bc2,
@@ -272,50 +333,95 @@ struct Minibatch:
     var logp: DeviceBuffer[DType.float32]
     var adv: DeviceBuffer[DType.float32]
     var ret: DeviceBuffer[DType.float32]
-    var actor: Acts
-    var critic: Acts
+    var acts: Acts
     var dlogits: DeviceBuffer[DType.float32]
     var dvalue: DeviceBuffer[DType.float32]
     var dh_a: DeviceBuffer[DType.float32]
     var dh_b: DeviceBuffer[DType.float32]
+    var ones: DeviceBuffer[DType.float32]
     var rows: Int
 
-    def __init__(out self, ctx: DeviceContext, rows: Int, actor: Net, critic: Net) raises:
+    def __init__(out self, ctx: DeviceContext, rows: Int) raises:
         self.rows = rows
         self.obs = ctx.enqueue_create_buffer[DType.float32](rows * OBS_SIZE)
         self.act = ctx.enqueue_create_buffer[DType.int32](rows)
         self.logp = ctx.enqueue_create_buffer[DType.float32](rows)
         self.adv = ctx.enqueue_create_buffer[DType.float32](rows)
         self.ret = ctx.enqueue_create_buffer[DType.float32](rows)
-        self.actor = Acts(ctx, actor, rows)
-        self.critic = Acts(ctx, critic, rows)
+        self.acts = Acts(ctx, rows)
         self.dlogits = ctx.enqueue_create_buffer[DType.float32](rows * NUM_ACTIONS)
         self.dvalue = ctx.enqueue_create_buffer[DType.float32](rows)
-        self.dh_a = ctx.enqueue_create_buffer[DType.float32](rows * WIDTH)
-        self.dh_b = ctx.enqueue_create_buffer[DType.float32](rows * WIDTH)
+        self.dh_a = ctx.enqueue_create_buffer[DType.float32](2 * rows * WIDTH)
+        self.dh_b = ctx.enqueue_create_buffer[DType.float32](2 * rows * WIDTH)
+        self.ones = ctx.enqueue_create_buffer[DType.float32](rows)
+        self.ones.enqueue_fill(1.0)
+
+
+struct Profiler:
+    """Optional per-stage timing: when enabled, mark() synchronises the
+    device and charges the elapsed wall time to a named stage. Diagnostic
+    only (synchronising removes host/device overlap)."""
+
+    var enabled: Bool
+    var names: List[String]
+    var secs: List[Float64]
+    var t: Int
+
+    def __init__(out self, enabled: Bool):
+        self.enabled = enabled
+        self.names = List[String]()
+        self.secs = List[Float64]()
+        self.t = Int(perf_counter_ns())
+
+    def mark(mut self, ctx: DeviceContext, name: String) raises:
+        if not self.enabled:
+            return
+        ctx.synchronize()
+        var now = Int(perf_counter_ns())
+        var dt = Float64(now - self.t) * 1e-9
+        self.t = now
+        for i in range(len(self.names)):
+            if self.names[i] == name:
+                self.secs[i] += dt
+                return
+        self.names.append(name)
+        self.secs.append(dt)
+
+    def report(self, batches: Int):
+        if not self.enabled:
+            return
+        var total: Float64 = 0
+        for i in range(len(self.secs)):
+            total += self.secs[i]
+        for i in range(len(self.names)):
+            print(
+                "  ", self.names[i], ":", self.secs[i] / Float64(batches) * 1e3,
+                "ms/batch (", self.secs[i] / total * 100, "%)",
+            )
 
 
 def update_minibatch(
     ctx: DeviceContext, gemm: Gemm, cfg: Config, mut opt: Optimizer, mb: Minibatch,
-    actor: Net, critic: Net, lr: Float32, stats: F32P,
+    nets: Nets, lr: Float32, stats: F32P, mut prof: Profiler,
 ) raises:
     """One PPO gradient step on the gathered minibatch."""
     var params = fp(opt.p)
     var grads = fp(opt.g)
     var rows = mb.rows
-    forward(ctx, gemm, params, actor, fp(mb.obs), rows, mb.actor)
-    forward(ctx, gemm, params, critic, fp(mb.obs), rows, mb.critic)
+    forward(ctx, gemm, params, nets, fp(mb.obs), mb.acts)
+    prof.mark(ctx, "update: forward")
     ctx.enqueue_function[nn.ppo_grad_kernel](
-        mb.actor.ptr(DEPTH - 1), mb.critic.ptr(DEPTH - 1), ip(mb.act), fp(mb.logp),
+        fp(mb.acts.logits), fp(mb.acts.value), ip(mb.act), fp(mb.logp),
         fp(mb.adv), fp(mb.ret), Int32(rows), Int32(NUM_ACTIONS), cfg.clip,
         cfg.vf_coef, cfg.ent_coef, fp(mb.dlogits), fp(mb.dvalue), stats,
         grid_dim=grid_for(rows), block_dim=BLOCK,
     )
-    backward(ctx, gemm, params, grads, actor, fp(mb.obs), rows, mb.actor,
-             fp(mb.dlogits), fp(mb.dh_a), fp(mb.dh_b))
-    backward(ctx, gemm, params, grads, critic, fp(mb.obs), rows, mb.critic,
-             fp(mb.dvalue), fp(mb.dh_a), fp(mb.dh_b))
+    prof.mark(ctx, "update: loss grad")
+    backward(ctx, gemm, params, grads, nets, fp(mb.obs), mb.acts, fp(mb.dlogits),
+             fp(mb.dvalue), fp(mb.dh_a), fp(mb.dh_b), fp(mb.ones))
+    prof.mark(ctx, "update: backward")
     opt.step(ctx, lr, cfg.max_grad_norm)
+    prof.mark(ctx, "update: clip + adam")
 
 
 # ---- Training ------------------------------------------------------------------
@@ -332,9 +438,8 @@ def train(cfg: Config, out_path: String) raises:
     while (1 << bits) < B:
         bits += 1
 
-    var actor = Net(0, OBS_SIZE, NUM_ACTIONS)
-    var critic = Net(actor.end, OBS_SIZE, 1)
-    var opt = Optimizer(ctx, init_params(actor, critic, cfg.seed))
+    var nets = Nets(OBS_SIZE)
+    var opt = Optimizer(ctx, init_params(nets, cfg.seed))
 
     # Environment state (field-major, as in gpu.mojo).
     var ints = ctx.enqueue_create_buffer[DType.int32](N * NUM_I)
@@ -364,9 +469,8 @@ def train(cfg: Config, out_path: String) raises:
     var moments = ctx.enqueue_create_buffer[DType.float32](2)
     var stats = ctx.enqueue_create_buffer[DType.float32](NB * STATS)
     stats.enqueue_fill(0)
-    var r_actor = Acts(ctx, actor, N)
-    var r_critic = Acts(ctx, critic, N)
-    var mb = Minibatch(ctx, MB, actor, critic)
+    var r_acts = Acts(ctx, N)
+    var mb = Minibatch(ctx, MB)
 
     @parameter
     def obs_slot(t: Int) -> F32P:
@@ -384,38 +488,42 @@ def train(cfg: Config, out_path: String) raises:
     env_reset(0, True)
     var t_start = perf_counter_ns()
     var global_step = 0
+    var prof = Profiler(cfg.profile)
     for batch in range(NB):
         var batch_stats = fp(stats).unsafe_offset(batch * STATS)
         # ---- Rollout ----
         for t in range(T):
-            forward(ctx, gemm, fp(opt.p), actor, obs_slot(t), N, r_actor)
-            forward(ctx, gemm, fp(opt.p), critic, obs_slot(t), N, r_critic)
-            ctx.enqueue_copy(
-                fp(val).unsafe_offset(t * N), r_critic.ptr(DEPTH - 1), N
-            )
+            forward(ctx, gemm, fp(opt.p), nets, obs_slot(t), r_acts)
+            ctx.enqueue_copy(fp(val).unsafe_offset(t * N), fp(r_acts.value), N)
+            prof.mark(ctx, "rollout: policy forward")
             ctx.enqueue_function[nn.sample_kernel](
-                r_actor.ptr(DEPTH - 1), Int32(N), Int32(NUM_ACTIONS), cfg.seed,
+                fp(r_acts.logits), Int32(N), Int32(NUM_ACTIONS), cfg.seed,
                 UInt64(global_step), ip(act).unsafe_offset(t * N),
                 fp(logp).unsafe_offset(t * N), grid_dim=grid_for(N), block_dim=BLOCK,
             )
+            prof.mark(ctx, "rollout: sample")
             done_count.enqueue_fill(0)
+            # One warp per block spreads the (latency-bound) env threads
+            # over more SMs: 1.2M -> 2.1M random steps/s at 512 envs.
             ctx.enqueue_function[gpu.step_actions_kernel](
                 ip(ints), fp(floats), up(map), up(mob), u64p(rng), obs_slot(t + 1),
                 fp(rew).unsafe_offset(t * N), up(done).unsafe_offset(t * N), Int32(N),
                 ip(done_idx), ip(done_count), ip(act).unsafe_offset(t * N),
-                grid_dim=grid_for(N), block_dim=BLOCK,
+                grid_dim=(N + ENV_BLOCK - 1) // ENV_BLOCK, block_dim=ENV_BLOCK,
             )
             ctx.enqueue_function[nn.episode_stats_kernel](
                 fp(rew).unsafe_offset(t * N), up(done).unsafe_offset(t * N), ip(ints),
                 Int32(N), Int32(I_ACH), Int32(NUM_ACHIEVEMENTS), fp(ep_ret),
                 fp(ep_len), batch_stats, grid_dim=grid_for(N), block_dim=BLOCK,
             )
+            prof.mark(ctx, "rollout: env step + stats")
             env_reset(t + 1, False)
+            prof.mark(ctx, "rollout: env reset")
             global_step += 1
 
         # ---- Advantages ----
-        forward(ctx, gemm, fp(opt.p), critic, obs_slot(T), N, r_critic)
-        ctx.enqueue_copy(fp(last_val), r_critic.ptr(DEPTH - 1), N)
+        forward(ctx, gemm, fp(opt.p), nets, obs_slot(T), r_acts)
+        ctx.enqueue_copy(fp(last_val), fp(r_acts.value), N)
         ctx.enqueue_function[nn.gae_kernel](
             fp(val), fp(rew), up(done), fp(last_val), Int32(N), Int32(T),
             cfg.gamma, cfg.gae_lambda, fp(adv), fp(ret),
@@ -428,6 +536,7 @@ def train(cfg: Config, out_path: String) raises:
             fp(adv), Int32(B), fp(moments), grid_dim=grid_for(B), block_dim=BLOCK
         )
 
+        prof.mark(ctx, "advantages")
         # ---- Updates ----
         var frac = Float32(1.0) - Float32(batch) / Float32(NB) if cfg.anneal else Float32(1.0)
         var lr = cfg.lr * frac
@@ -440,11 +549,14 @@ def train(cfg: Config, out_path: String) raises:
                     Int32(OBS_SIZE), Int32(MB), Int32(k * MB), Int32(B), Int32(bits), key,
                     grid_dim=grid_for(MB * OBS_SIZE), block_dim=BLOCK,
                 )
-                update_minibatch(ctx, gemm, cfg, opt, mb, actor, critic, lr,
-                                 batch_stats.unsafe_offset(3 + NUM_ACHIEVEMENTS))
+                prof.mark(ctx, "update: gather")
+                update_minibatch(ctx, gemm, cfg, opt, mb, nets, lr,
+                                 batch_stats.unsafe_offset(3 + NUM_ACHIEVEMENTS), prof)
         # Next batch starts from the bootstrap observation.
         ctx.enqueue_copy(obs_slot(0), obs_slot(T), N * OBS_SIZE)
+        prof.mark(ctx, "next-batch copy")
     ctx.synchronize()
+    prof.report(NB)
     var secs = Float64(perf_counter_ns() - t_start) * 1e-9
 
     var steps = NB * B

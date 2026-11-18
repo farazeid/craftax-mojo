@@ -8,8 +8,18 @@ from std.atomic import Atomic
 from max.gpu import global_idx, thread_idx, block_idx, grid_dim
 from max.gpu.host import DeviceContext
 from max.gpu.primitives import block
-from layout import TileTensor, row_major
 import linalg.matmul.vendor.blas as vendor_blas
+from _cublas.cublas import (
+    _get_dylib_function,
+    check_cublas_error,
+    cublasSetMathMode,
+    cublasMath_t,
+    cublasOperation_t,
+    ComputeType,
+    Algorithm,
+)
+from _cublas.dtype import DataType
+from _cublas.result import Result
 
 from .rng import SplitMix, seed_key
 
@@ -26,67 +36,119 @@ def grid_for(n: Int) -> Int:
 
 
 # ---- GEMM ------------------------------------------------------------------
-# C[M,N] = alpha * op(A) @ op(B) + beta * C, row-major. op(A) is [M,K]
-# (stored [K,M] if trans_a); op(B) is [K,N] (stored [N,K] if trans_b).
+# Row-major, strided-batched: for each batch i,
+#   C_i[M,N] = alpha * op(A_i) @ op(B_i) + beta * C_i
+# where op(A_i) is [M,K] (stored [K,M] if trans_a) at A + i * stride_a, etc.
+# A stride of 0 shares one operand across the batch.
 
 def gemm_naive_kernel(
     c: F32P, a: F32P, b: F32P, m: Int32, n: Int32, k: Int32,
     trans_a: Int32, trans_b: Int32, alpha: Float32, beta: Float32,
+    batch: Int32, sa: Int32, sb: Int32, sc: Int32,
 ):
     var idx = global_idx.x
     var M = Int(m)
     var N = Int(n)
     var K = Int(k)
-    if idx >= M * N:
+    if idx >= Int(batch) * M * N:
         return
-    var i = idx // N
-    var j = idx % N
+    var bi = idx // (M * N)
+    var r = idx % (M * N)
+    var i = r // N
+    var j = r % N
+    var ap = a.unsafe_offset(bi * Int(sa))
+    var bp = b.unsafe_offset(bi * Int(sb))
     var acc: Float32 = 0
     for p in range(K):
-        var av = a[unsafe_offset = p * M + i] if trans_a != 0 else a[unsafe_offset = i * K + p]
-        var bv = b[unsafe_offset = j * K + p] if trans_b != 0 else b[unsafe_offset = p * N + j]
+        var av = ap[unsafe_offset = p * M + i] if trans_a != 0 else ap[unsafe_offset = i * K + p]
+        var bv = bp[unsafe_offset = j * K + p] if trans_b != 0 else bp[unsafe_offset = p * N + j]
         acc += av * bv
     var res = alpha * acc
+    var ci = bi * Int(sc) + i * N + j
     if beta != 0:
-        res += beta * c[unsafe_offset=idx]
-    c[unsafe_offset=idx] = res
+        res += beta * c[unsafe_offset=ci]
+    c[unsafe_offset=ci] = res
+
+
+comptime _VoidP = OpaquePointer[MutAnyOrigin]
+
+
+@inline(.always)
+def _void(p: F32P) -> _VoidP:
+    return _VoidP(unsafe_from_address=Int(p))
 
 
 struct Gemm:
-    """Dispatches to cuBLAS on NVIDIA GPUs, a naive kernel elsewhere."""
+    """cuBLAS (cublasGemmStridedBatchedEx) on NVIDIA GPUs, a naive Mojo
+    kernel elsewhere.
+
+    MAX's vendor_blas.matmul resolves a global handle by name, re-binds it to
+    the stream, pushes a context, opens a trace scope and sets the math mode
+    on every call, and has no strided-batched entry point. PPO issues ~1000
+    GEMMs per batch, many of them actor/critic pairs of identical shape, so
+    this binds cublasGemmStridedBatchedEx through MAX's cuBLAS loader, with
+    one handle whose stream and math mode are set once.
+    """
 
     var use_blas: Bool
     var tf32: Bool
+    var handle: Optional[vendor_blas.Handle[vendor_blas.Backend.CUBLAS]]
 
     def __init__(out self, ctx: DeviceContext, tf32: Bool) raises:
         self.use_blas = String(ctx.api()) == "cuda"
         self.tf32 = tf32
+        self.handle = None
+        if self.use_blas:
+            var h = vendor_blas.Handle[vendor_blas.Backend.CUBLAS]()
+            vendor_blas._attach_handle_to_stream(ctx, h)
+            check_cublas_error(cublasSetMathMode(
+                h._get_cublas(),
+                cublasMath_t.CUBLAS_TF32_TENSOR_OP_MATH if tf32 else cublasMath_t.CUBLAS_DEFAULT_MATH,
+            ))
+            self.handle = h
 
     def __call__(
         self, ctx: DeviceContext, c: F32P, a: F32P, b: F32P, m: Int, n: Int, k: Int,
         trans_a: Bool = False, trans_b: Bool = False, alpha: Float32 = 1.0,
-        beta: Float32 = 0.0,
+        beta: Float32 = 0.0, batch: Int = 1, stride_a: Int = 0, stride_b: Int = 0,
+        stride_c: Int = 0,
     ) raises:
-        if self.use_blas:
-            var ct = TileTensor(c, row_major(m, n))
-            var at = TileTensor(a, row_major(k, m) if trans_a else row_major(m, k))
-            var bt = TileTensor(b, row_major(n, k) if trans_b else row_major(k, n))
-            if self.tf32:
-                vendor_blas.matmul[use_tf32=True](
-                    ctx, ct, at, bt, c_row_major=True, transpose_a=trans_a,
-                    transpose_b=trans_b, alpha=alpha, beta=beta,
-                )
-            else:
-                vendor_blas.matmul[use_tf32=False](
-                    ctx, ct, at, bt, c_row_major=True, transpose_a=trans_a,
-                    transpose_b=trans_b, alpha=alpha, beta=beta,
-                )
-        else:
+        if not self.use_blas:
             ctx.enqueue_function[gemm_naive_kernel](
                 c, a, b, Int32(m), Int32(n), Int32(k),
                 Int32(1) if trans_a else Int32(0), Int32(1) if trans_b else Int32(0),
-                alpha, beta, grid_dim=grid_for(m * n), block_dim=BLOCK,
+                alpha, beta, Int32(batch), Int32(stride_a), Int32(stride_b),
+                Int32(stride_c), grid_dim=grid_for(batch * m * n), block_dim=BLOCK,
             )
+            return
+        # Row-major C = op(A) op(B) is column-major C^T = op(B)^T op(A)^T.
+        var h = self.handle.value()._get_cublas()
+        var al = alpha
+        var be = beta
+        var op_a = cublasOperation_t.CUBLAS_OP_T if trans_a else cublasOperation_t.CUBLAS_OP_N
+        var op_b = cublasOperation_t.CUBLAS_OP_T if trans_b else cublasOperation_t.CUBLAS_OP_N
+        var lda = Int32(m if trans_a else k)
+        var ldb = Int32(k if trans_b else n)
+        var compute = ComputeType.COMPUTE_32F_FAST_TF32 if self.tf32 else ComputeType.COMPUTE_32F
+        var gemm_fn = _get_dylib_function[
+            "cublasGemmStridedBatchedEx",
+            def(
+                type_of(h), cublasOperation_t, cublasOperation_t, Int32, Int32, Int32,
+                _VoidP, _VoidP, DataType, Int32, Int64, _VoidP, DataType, Int32, Int64,
+                _VoidP, _VoidP, DataType, Int32, Int64, Int32, ComputeType, Algorithm,
+            ) thin -> Result,
+        ]()
+        check_cublas_error(gemm_fn(
+            h, op_b, op_a, Int32(n), Int32(m), Int32(k),
+            _VoidP(unsafe_from_address=Int(Pointer(to=al))),
+            _void(b), DataType.R_32F, ldb, Int64(stride_b),
+            _void(a), DataType.R_32F, lda, Int64(stride_a),
+            _VoidP(unsafe_from_address=Int(Pointer(to=be))),
+            _void(c), DataType.R_32F, Int32(n), Int64(stride_c), Int32(batch),
+            compute, Algorithm.DEFAULT,
+        ))
+        _ = al
+        _ = be
 
 
 # ---- Elementwise -----------------------------------------------------------
@@ -97,6 +159,19 @@ def bias_act_kernel(z: F32P, b: F32P, m: Int32, n: Int32, act: Int32):
     if idx >= Int(m) * Int(n):
         return
     var v = z[unsafe_offset=idx] + b[unsafe_offset = idx % Int(n)]
+    z[unsafe_offset=idx] = tanh(v) if act != 0 else v
+
+
+def bias_act_batched_kernel(
+    z: F32P, b: F32P, rows: Int32, n: Int32, batch: Int32, act: Int32
+):
+    """z is [batch, rows, n]; z[k, i, j] = act(z[k, i, j] + b[k * n + j])."""
+    var idx = global_idx.x
+    var per = Int(rows) * Int(n)
+    if idx >= Int(batch) * per:
+        return
+    var k = idx // per
+    var v = z[unsafe_offset=idx] + b[unsafe_offset = k * Int(n) + idx % Int(n)]
     z[unsafe_offset=idx] = tanh(v) if act != 0 else v
 
 
