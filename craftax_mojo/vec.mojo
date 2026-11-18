@@ -154,19 +154,39 @@ def step_random_cpu(b: Buffers, workers: Int):
 
 
 # ---- GPU kernels (one thread per env, field-major state) -----------------
-def reset_kernel(b: Buffers, seed: UInt64):
+# Kernel arguments must be device-passable, so the buffers are passed
+# individually and n as Int32.
+comptime I32P = Pointer[Int32, MutUntrackedOrigin]
+comptime F32P = Pointer[Float32, MutUntrackedOrigin]
+comptime U8P = Pointer[UInt8, MutUntrackedOrigin]
+comptime U64P = Pointer[UInt64, MutUntrackedOrigin]
+
+
+def reset_kernel(
+    ints: I32P, floats: F32P, map: U8P, mob_map: U8P, rng: U64P, obs: F32P,
+    reward: F32P, done: U8P, n: Int32, seed: UInt64,
+):
     var e = global_idx.x
-    if e < b.n:
+    if e < Int(n):
+        var b = Buffers(ints, floats, map, mob_map, rng, obs, reward, done, Int(n))
         reset_one[True](b, e, seed)
 
 
-def step_kernel(b: Buffers, actions: Pointer[Int32, MutUntrackedOrigin]):
+def step_random_kernel(
+    ints: I32P, floats: F32P, map: U8P, mob_map: U8P, rng: U64P, obs: F32P,
+    reward: F32P, done: U8P, n: Int32,
+):
     var e = global_idx.x
-    if e < b.n:
-        step_one[True](b, e, Int(actions[unsafe_offset=e]))
-
-
-def step_random_kernel(b: Buffers):
-    var e = global_idx.x
-    if e < b.n:
+    if e < Int(n):
+        var b = Buffers(ints, floats, map, mob_map, rng, obs, reward, done, Int(n))
         step_one[True](b, e, random_action[True](b, e))
+
+
+def step_kernel(
+    ints: I32P, floats: F32P, map: U8P, mob_map: U8P, rng: U64P, obs: F32P,
+    reward: F32P, done: U8P, n: Int32, actions: I32P,
+):
+    var e = global_idx.x
+    if e < Int(n):
+        var b = Buffers(ints, floats, map, mob_map, rng, obs, reward, done, Int(n))
+        step_one[True](b, e, Int(actions[unsafe_offset=e]))

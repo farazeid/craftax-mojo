@@ -12,6 +12,7 @@ if [[ "$(uname)" == "Darwin" && -z "${SDKROOT:-}" ]]; then
 fi
 
 MOJO="${MOJO:-uv run mojo}"
+# xcrun --sdk macosx resolves to Xcode (not the CLT) once xcode-select points there.
 $MOJO build -I . python/craftax_mojo_ext.mojo --emit shared-lib -o build/craftax_mojo_ext.so
 if [[ -f bench/bench_mojo.mojo ]]; then
   $MOJO build -I . bench/bench_mojo.mojo -o build/bench_mojo
