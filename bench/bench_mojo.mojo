@@ -2,7 +2,7 @@
 # second, including observation writes, for a sweep of batch sizes.
 #
 #   bench_mojo cpu <steps> <n1,n2,...> [workers]
-#   bench_mojo gpu <steps> <n1,n2,...> [block_size]
+#   bench_mojo gpu|gpu-naive <steps> <n1,n2,...> [block_size]
 #
 # Prints one JSON object per batch size.
 
@@ -14,6 +14,7 @@ from max.gpu.host import DeviceContext
 from craftax_mojo.constants import *
 from craftax_mojo.state import NUM_I, NUM_F
 from craftax_mojo import vec
+from craftax_mojo.gpu_host import GpuBatch
 
 comptime SEED: UInt64 = 0
 comptime WARMUP = 5
@@ -89,40 +90,29 @@ def bench_cpu(steps: Int, sizes: List[Int], workers: Int) raises:
         _ = done^
 
 
-def bench_gpu(steps: Int, sizes: List[Int], block: Int) raises:
+def bench_gpu(steps: Int, sizes: List[Int], block: Int, naive: Bool) raises:
     var ctx = DeviceContext()
     var name = String(ctx.name())
     for n in sizes:
-        var ints = ctx.enqueue_create_buffer[DType.int32](n * NUM_I)
-        var floats = ctx.enqueue_create_buffer[DType.float32](n * NUM_F)
-        var map = ctx.enqueue_create_buffer[DType.uint8](n * MAP_CELLS)
-        var mob = ctx.enqueue_create_buffer[DType.uint8](n * MAP_CELLS)
-        var rng = ctx.enqueue_create_buffer[DType.uint64](n * 2)
-        var obs = ctx.enqueue_create_buffer[DType.float32](n * OBS_SIZE)
-        var reward = ctx.enqueue_create_buffer[DType.float32](n)
-        var done = ctx.enqueue_create_buffer[DType.uint8](n)
-        var grid = (n + block - 1) // block
-        ctx.enqueue_function[vec.reset_kernel](
-            ints, floats, map, mob, rng, obs, reward, done, Int32(n), SEED,
-            grid_dim=grid, block_dim=block,
-        )
+        var g = GpuBatch(ctx, n, block)
+        g.reset(SEED)
         for _ in range(WARMUP):
-            ctx.enqueue_function[vec.step_random_kernel](
-                ints, floats, map, mob, rng, obs, reward, done, Int32(n),
-                grid_dim=grid, block_dim=block,
-            )
-        ctx.synchronize()
+            if naive:
+                g.step_random_naive()
+            else:
+                g.step_random()
+        g.synchronize()
         var t0 = perf_counter_ns()
         for _ in range(steps):
-            ctx.enqueue_function[vec.step_random_kernel](
-                ints, floats, map, mob, rng, obs, reward, done, Int32(n),
-                grid_dim=grid, block_dim=block,
-            )
-        ctx.synchronize()
+            if naive:
+                g.step_random_naive()
+            else:
+                g.step_random()
+        g.synchronize()
         var t1 = perf_counter_ns()
         _emit(
-            "gpu", name, n, steps, Float64(t1 - t0) * 1e-9,
-            ', "block": ' + String(block),
+            "gpu-naive" if naive else "gpu", name, n, steps,
+            Float64(t1 - t0) * 1e-9, ', "block": ' + String(block),
         )
 
 
@@ -139,4 +129,4 @@ def main() raises:
         bench_cpu(steps, sizes, workers)
     else:
         var block = Int(String(args[4])) if len(args) > 4 else 128
-        bench_gpu(steps, sizes, block)
+        bench_gpu(steps, sizes, block, device == "gpu-naive")

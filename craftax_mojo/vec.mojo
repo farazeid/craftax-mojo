@@ -9,7 +9,7 @@ from max.gpu import global_idx
 from .constants import *
 from .state import *
 from .rng import Rng, SplitMix, seed_key
-from .worldgen import generate_world
+from .worldgen import generate_world, generate_world_local
 from .game import step, is_game_over
 from .obs import write_obs
 
@@ -77,6 +77,15 @@ struct Buffers(Copyable):
 
 
 @inline(.always)
+def _generate[FM: Bool](env: EnvView[FM], mut rng: SplitMix):
+    # FM (field-major) is the GPU layout; GPU threads cannot heap-allocate.
+    comptime if FM:
+        generate_world_local(env, rng)
+    else:
+        generate_world(env, rng)
+
+
+@inline(.always)
 def reset_one[FM: Bool](b: Buffers, e: Int, seed: UInt64):
     var key = seed_key(seed, UInt64(e))
     comptime if FM:
@@ -85,7 +94,7 @@ def reset_one[FM: Bool](b: Buffers, e: Int, seed: UInt64):
         b.rng[unsafe_offset = 2 * e] = key
     var rng = SplitMix(key, 0)
     var env = b.view[FM](e)
-    generate_world(env, rng)
+    _generate[FM](env, rng)
     write_obs(env, b.obs_ptr(e))
     b.store_rng[FM](e, rng)
 
@@ -97,7 +106,7 @@ def step_one[FM: Bool](b: Buffers, e: Int, action: Int):
     var r = step(env, action, rng)
     var d = is_game_over(env)
     if d:
-        generate_world(env, rng)
+        _generate[FM](env, rng)
     write_obs(env, b.obs_ptr(e))
     b.reward[unsafe_offset=e] = r
     b.done[unsafe_offset=e] = UInt8(1) if d else UInt8(0)

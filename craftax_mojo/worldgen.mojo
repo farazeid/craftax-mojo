@@ -267,7 +267,54 @@ def generate_world[FM: Bool, R: Rng](env: EnvView[FM], mut rng: R):
             env.set_cell(c, b)
             env.set_mob_cell(c, False)
     _ = scratch^
+    _finish_world(env, rng)
 
+
+def generate_world_local[FM: Bool, R: Rng](env: EnvView[FM], mut rng: R):
+    """Allocation-free variant for use inside a GPU thread.
+
+    Heap allocation is unavailable in kernels, so the gradient table lives in
+    a local array and noise is re-evaluated in pass 2 instead of cached.
+    """
+    var start = rng.reserve(D_TOTAL)
+    var table = Array[Float32, 2 * T_SIZE](fill=0)
+    var tab = Pointer[Float32, MutUntrackedOrigin](
+        unsafe_from_address=Int(table.unsafe_ptr())
+    )
+    for k in range(T_SIZE):
+        fill_table_entry(rng, start, k, tab)
+    var mm_w = MinMax()
+    var mm_m = MinMax()
+    var mm_p = MinMax()
+    var mm_t = MinMax()
+    for x in range(MAP_W):
+        for y in range(MAP_H):
+            mm_w.add(water_raw(tab, x, y))
+            mm_m.add(mountain_raw(tab, x, y))
+            mm_p.add(path_raw(tab, x, y))
+            mm_t.add(tree_raw(tab, x, y))
+    for x in range(MAP_W):
+        for y in range(MAP_H):
+            var c = x * MAP_H + y
+            var b = cell_block(
+                rng,
+                start,
+                x,
+                y,
+                mm_w.norm(water_raw(tab, x, y)),
+                mm_m.norm(mountain_raw(tab, x, y)),
+                mm_p.norm(path_raw(tab, x, y)),
+                mm_p.norm(path_raw(tab, y, x)),
+                mm_t.norm(tree_raw(tab, x, y)),
+            )
+            env.set_cell(c, b)
+            env.set_mob_cell(c, False)
+    _ = table^
+    _finish_world(env, rng)
+
+
+@inline(.always)
+def _finish_world[FM: Bool, R: Rng](env: EnvView[FM], mut rng: R):
     # always_diamond: one extra diamond on a uniformly chosen stone cell.
     var diamond_index = -1
     comptime if R.IS_TAPE:

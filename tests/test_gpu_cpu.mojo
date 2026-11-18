@@ -3,7 +3,7 @@
 # the same seed. Steps both for K steps and compares every state field, the
 # observation, reward and done flag.
 #
-#   mojo run -I . tests/test_gpu_cpu.mojo [n] [steps]
+#   mojo run -I . tests/test_gpu_cpu.mojo [n] [steps] [naive]
 
 from std.memory import Pointer
 from std.sys import argv, num_performance_cores
@@ -12,6 +12,7 @@ from max.gpu.host import DeviceContext
 from craftax_mojo.constants import *
 from craftax_mojo.state import NUM_I, NUM_F
 from craftax_mojo import vec
+from craftax_mojo.gpu_host import GpuBatch
 
 
 @inline(.always)
@@ -23,6 +24,7 @@ def main() raises:
     var args = argv()
     var n = Int(String(args[1])) if len(args) > 1 else 1024
     var steps = Int(String(args[2])) if len(args) > 2 else 500
+    var naive = len(args) > 3 and String(args[3]) == "naive"
     var workers = num_performance_cores()
 
     # CPU, env-major
@@ -41,33 +43,20 @@ def main() raises:
 
     # GPU, field-major
     var ctx = DeviceContext()
-    var g_ints = ctx.enqueue_create_buffer[DType.int32](n * NUM_I)
-    var g_floats = ctx.enqueue_create_buffer[DType.float32](n * NUM_F)
-    var g_map = ctx.enqueue_create_buffer[DType.uint8](n * MAP_CELLS)
-    var g_mob = ctx.enqueue_create_buffer[DType.uint8](n * MAP_CELLS)
-    var g_rng = ctx.enqueue_create_buffer[DType.uint64](n * 2)
-    var g_obs = ctx.enqueue_create_buffer[DType.float32](n * OBS_SIZE)
-    var g_reward = ctx.enqueue_create_buffer[DType.float32](n)
-    var g_done = ctx.enqueue_create_buffer[DType.uint8](n)
-    comptime block = 128
-    var grid = (n + block - 1) // block
-
+    var g = GpuBatch(ctx, n)
     vec.reset_cpu(b, 7, workers)
-    ctx.enqueue_function[vec.reset_kernel](
-        g_ints, g_floats, g_map, g_mob, g_rng, g_obs, g_reward, g_done,
-        Int32(n), UInt64(7), grid_dim=grid, block_dim=block,
-    )
+    g.reset(7)
 
     var reward_mismatch = 0
     var done_mismatch = 0
     var episodes = 0
     for _ in range(steps):
         vec.step_random_cpu(b, workers)
-        ctx.enqueue_function[vec.step_random_kernel](
-            g_ints, g_floats, g_map, g_mob, g_rng, g_obs, g_reward, g_done,
-            Int32(n), grid_dim=grid, block_dim=block,
-        )
-        with g_reward.map_to_host() as gr, g_done.map_to_host() as gd:
+        if naive:
+            g.step_random_naive()
+        else:
+            g.step_random()
+        with g.reward.map_to_host() as gr, g.done.map_to_host() as gd:
             for e in range(n):
                 if gr[e] != reward[e]:
                     reward_mismatch += 1
@@ -79,7 +68,7 @@ def main() raises:
     var float_mismatch = 0
     var map_mismatch = 0
     var obs_mismatch = 0
-    with g_ints.map_to_host() as gi, g_floats.map_to_host() as gf:
+    with g.ints.map_to_host() as gi, g.floats.map_to_host() as gf:
         for e in range(n):
             for f in range(NUM_I):
                 if gi[f * n + e] != ints[e * NUM_I + f]:
@@ -87,20 +76,20 @@ def main() raises:
             for f in range(NUM_F):
                 if abs(gf[f * n + e] - floats[e * NUM_F + f]) > 1e-5:
                     float_mismatch += 1
-    with g_map.map_to_host() as gm, g_mob.map_to_host() as gb:
+    with g.map.map_to_host() as gm, g.mob.map_to_host() as gb:
         for e in range(n):
             for c in range(MAP_CELLS):
                 if gm[c * n + e] != map[e * MAP_CELLS + c]:
                     map_mismatch += 1
                 if gb[c * n + e] != mob[e * MAP_CELLS + c]:
                     map_mismatch += 1
-    with g_obs.map_to_host() as go:
+    with g.obs.map_to_host() as go:
         for i in range(n * OBS_SIZE):
             if abs(go[i] - obs[i]) > 1e-5:
                 obs_mismatch += 1
 
     print(
-        "envs", n, "steps", steps, "episodes finished", episodes,
+        "naive" if naive else "deferred-reset", "envs", n, "steps", steps, "episodes finished", episodes,
         "| mismatches: reward", reward_mismatch, "done", done_mismatch,
         "ints", int_mismatch, "floats", float_mismatch, "map", map_mismatch,
         "obs", obs_mismatch,
