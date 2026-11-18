@@ -4,4 +4,4 @@ __pycache__/
 __mojocache__/
 .pytest_cache/
 *.so
-results/raw/
+results/raw/*.log
