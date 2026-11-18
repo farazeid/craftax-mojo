@@ -63,13 +63,61 @@ def table_draw(k: Int) -> Int:
     return D_TREE + (k - T_TREE)
 
 
+# ---- Device-independent sin/cos ---------------------------------------------
+# Library sin/cos round differently per device (vs the CPU: up to 1 ulp on
+# Apple GPUs, ~6 ulp on NVIDIA), which occasionally flips a noise threshold
+# in world generation. These Cephes-style float32 sinf/cosf use only IEEE
+# add/mul (we build with FMA contraction off), so every device produces the
+# same bits; accuracy is ~1 ulp, like libm. Valid for 0 <= x < 8192.
+comptime _FOPI: Float32 = 1.27323954473516  # 4 / pi
+comptime _DP1: Float32 = 0.78515625
+comptime _DP2: Float32 = 2.4187564849853515625e-4
+comptime _DP3: Float32 = 3.77489497744594108e-8
+
+
+@inline(.always)
+def _sin_poly(z: Float32, zz: Float32) -> Float32:
+    return ((-1.9515295891e-4 * zz + 8.3321608736e-3) * zz - 1.6666654611e-1) * zz * z + z
+
+
+@inline(.always)
+def _cos_poly(zz: Float32) -> Float32:
+    var y = ((2.443315711809948e-5 * zz - 1.388731625493765e-3) * zz + 4.166664568298827e-2) * zz * zz
+    return y - 0.5 * zz + 1.0
+
+
+@inline(.always)
+def det_sincos(x: Float32) -> Tuple[Float32, Float32]:
+    """(cos x, sin x) for 0 <= x < 8192, bit-identical on every device."""
+    var j = Int(_FOPI * x)
+    if j & 1:
+        j += 1
+    var y = Float32(j)
+    j &= 7
+    var sin_neg = False
+    var cos_neg = False
+    if j > 3:
+        j -= 4
+        sin_neg = True
+        cos_neg = True
+    if j > 1:
+        cos_neg = not cos_neg
+    var z = ((x - y * _DP1) - y * _DP2) - y * _DP3
+    var zz = z * z
+    var sp = _sin_poly(z, zz)
+    var cp = _cos_poly(zz)
+    var sv = cp if (j == 1 or j == 2) else sp
+    var cv = sp if (j == 1 or j == 2) else cp
+    return (-cv if cos_neg else cv, -sv if sin_neg else sv)
+
+
 @inline(.always)
 def fill_table_entry[R: Rng](
     rng: R, start: Int, k: Int, tab: Pointer[Float32, MutUntrackedOrigin]
 ):
-    var a = TWO_PI * rng.at(start, table_draw(k))
-    tab[unsafe_offset = 2 * k] = cos(a)
-    tab[unsafe_offset = 2 * k + 1] = sin(a)
+    var cs = det_sincos(TWO_PI * rng.at(start, table_draw(k)))
+    tab[unsafe_offset = 2 * k] = cs[0]
+    tab[unsafe_offset = 2 * k + 1] = cs[1]
 
 
 @inline(.always)

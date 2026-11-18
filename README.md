@@ -31,11 +31,20 @@ and Mojo's `cos` differ by at most 1.8e-7 (one float32 ulp) on 1.5% of
 timesteps; it feeds the zombie spawn probability, so a flipped spawn is
 possible but has a probability of about 1e-7 per step.
 
+**Statistics** (`parity/test_distribution.py`): with each side using its own
+RNG, per-world block counts (512 worlds) and random-policy rollout statistics
+(terminations, reward, per-achievement unlock rates over 512 envs x 400
+steps) agree with JAX within |z| < 1.9.
+
 **Device identity** (`tests/test_gpu_cpu.mojo`): the benchmark RNG is
 counter-based and per-env, so the CPU and GPU paths must produce the same
-trajectories from the same seed. 2,048 envs x 500 steps match bit for bit on
-the M4 Pro GPU. On an L40S, 2 of ~24M generated map cells differ; all
-scalars, rewards and observations match (see below).
+trajectories from the same seed. They do, bit for bit, on the M4 Pro GPU and
+an L40S (2,048 envs x 1,000 steps, ~12k resets). This needs two things:
+builds use `--fp-mode contract=off` (backends otherwise fuse different
+multiply-adds), and world generation uses its own Cephes-style `sin`/`cos`
+built from IEEE add/mul, because library trig rounds differently per device
+(`tests/diag_trig.mojo`: up to 1 ulp on Apple, ~6 ulp on NVIDIA, which
+occasionally flipped a noise threshold).
 
 ## Layout
 
