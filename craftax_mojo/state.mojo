@@ -4,7 +4,8 @@
 # float32 scalars, uint8 map, uint8 mob_map). `FM` (field-major) selects the
 # memory order: field-major (`field * n + env`) gives coalesced access when one
 # GPU thread owns one env; env-major (`env * stride + field`) keeps each env
-# contiguous, which is what CPU caches want.
+# contiguous, which is what CPU caches want. The two maps are env-major in
+# both layouts (see EnvView._c).
 
 from std.memory import Pointer
 
@@ -141,10 +142,11 @@ struct EnvView[FM: Bool](Copyable):
 
     @inline(.always)
     def _c(self, cell: Int) -> Int:
-        comptime if Self.FM:
-            return cell * self.n + self.e
-        else:
-            return self.e * MAP_CELLS + cell
+        # Maps are env-major in both layouts: a thread scans its own map
+        # around its own player, so contiguous per-env maps cost far fewer
+        # cache lines than cell-major interleaving (which only coalesces
+        # when every thread reads the same cell).
+        return self.e * MAP_CELLS + cell
 
     # ---- scalars ----------------------------------------------------------
     @inline(.always)

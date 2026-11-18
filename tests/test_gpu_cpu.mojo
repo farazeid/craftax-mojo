@@ -79,9 +79,9 @@ def main() raises:
     with g.map.map_to_host() as gm, g.mob.map_to_host() as gb:
         for e in range(n):
             for c in range(MAP_CELLS):
-                if gm[c * n + e] != map[e * MAP_CELLS + c]:
+                if gm[e * MAP_CELLS + c] != map[e * MAP_CELLS + c]:
                     map_mismatch += 1
-                if gb[c * n + e] != mob[e * MAP_CELLS + c]:
+                if gb[e * MAP_CELLS + c] != mob[e * MAP_CELLS + c]:
                     map_mismatch += 1
     with g.obs.map_to_host() as go:
         for i in range(n * OBS_SIZE):
