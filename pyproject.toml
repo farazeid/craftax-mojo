@@ -1,0 +1,19 @@
+[project]
+name = "craftax-mojo"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "craftax",
+    "flax>=0.12.12",
+    "jax==0.*",
+    "modular>=26.7.0",
+    "numpy>=2.5.5",
+]
+
+[tool.uv.sources]
+craftax = { git = "https://github.com/MichaelTMatthews/Craftax", rev = "d8499d3da008f21c8b67404aae72551c9b1d636a" }
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]
