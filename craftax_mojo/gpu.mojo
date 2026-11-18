@@ -46,27 +46,47 @@ comptime CELLS_PER_THREAD = MAP_CELLS // RESET_BLOCK  # 16
 comptime SCRATCH_PER_BLOCK = 2 * T_SIZE + MAP_CELLS
 
 
-def step_kernel(
-    ints: I32P, floats: F32P, map: U8P, mob_map: U8P, rng: U64P, obs: F32P,
-    reward: F32P, done: U8P, n: Int32, done_idx: I32P, done_count: I32P,
+@inline(.always)
+def _step_env(
+    b: Buffers, e: Int, action: Int, done_idx: I32P, done_count: I32P
 ):
-    var e = global_idx.x
-    if e >= Int(n):
-        return
-    var b = Buffers(ints, floats, map, mob_map, rng, obs, reward, done, Int(n))
-    var action = random_action[True](b, e)
     var r = b.load_rng[True](e)
     var env = b.view[True](e)
     var rew = step(env, action, r)
     var d = is_game_over(env)
     b.store_rng[True](e, r)
-    reward[unsafe_offset=e] = rew
-    done[unsafe_offset=e] = UInt8(1) if d else UInt8(0)
+    b.reward[unsafe_offset=e] = rew
+    b.done[unsafe_offset=e] = UInt8(1) if d else UInt8(0)
     if not d:
         write_obs(env, b.obs_ptr(e))
     else:
         var slot = Atomic[Int32].fetch_add(done_count, Int32(1))
         done_idx[unsafe_offset = Int(slot)] = Int32(e)
+
+
+def step_kernel(
+    ints: I32P, floats: F32P, map: U8P, mob_map: U8P, rng: U64P, obs: F32P,
+    reward: F32P, done: U8P, n: Int32, done_idx: I32P, done_count: I32P,
+):
+    """Uniform random actions from each env's own stream (benchmarks)."""
+    var e = global_idx.x
+    if e >= Int(n):
+        return
+    var b = Buffers(ints, floats, map, mob_map, rng, obs, reward, done, Int(n))
+    _step_env(b, e, random_action[True](b, e), done_idx, done_count)
+
+
+def step_actions_kernel(
+    ints: I32P, floats: F32P, map: U8P, mob_map: U8P, rng: U64P, obs: F32P,
+    reward: F32P, done: U8P, n: Int32, done_idx: I32P, done_count: I32P,
+    actions: I32P,
+):
+    """Actions supplied by a policy (training)."""
+    var e = global_idx.x
+    if e >= Int(n):
+        return
+    var b = Buffers(ints, floats, map, mob_map, rng, obs, reward, done, Int(n))
+    _step_env(b, e, Int(actions[unsafe_offset=e]), done_idx, done_count)
 
 
 def reset_kernel(
