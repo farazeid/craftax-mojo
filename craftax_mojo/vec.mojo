@@ -124,7 +124,9 @@ def random_action[FM: Bool](b: Buffers, e: Int) -> Int:
 
 # ---- CPU -----------------------------------------------------------------
 def _chunks(n: Int, workers: Int) -> Int:
-    return min(n, workers * 4)
+    # ~32 envs (~30us of work) per chunk amortises the ~70us pool dispatch.
+    return max(1, min(n // 32, workers * 4))
+
 
 
 def reset_cpu(b: Buffers, seed: UInt64, workers: Int):
@@ -135,7 +137,10 @@ def reset_cpu(b: Buffers, seed: UInt64, workers: Int):
         for e in range(c * n // nc, (c + 1) * n // nc):
             reset_one[False](b, e, seed)
 
-    parallelize(work, nc)
+    if nc == 1:  # skip the thread pool entirely
+        work(0)
+    else:
+        parallelize(work, nc)
 
 
 def step_cpu(
@@ -148,7 +153,10 @@ def step_cpu(
         for e in range(c * n // nc, (c + 1) * n // nc):
             step_one[False](b, e, Int(actions[unsafe_offset=e]))
 
-    parallelize(work, nc)
+    if nc == 1:  # skip the thread pool entirely
+        work(0)
+    else:
+        parallelize(work, nc)
 
 
 def step_random_cpu(b: Buffers, workers: Int):
@@ -159,7 +167,10 @@ def step_random_cpu(b: Buffers, workers: Int):
         for e in range(c * n // nc, (c + 1) * n // nc):
             step_one[False](b, e, random_action[False](b, e))
 
-    parallelize(work, nc)
+    if nc == 1:  # skip the thread pool entirely
+        work(0)
+    else:
+        parallelize(work, nc)
 
 
 # ---- GPU kernels (one thread per env, field-major state) -----------------
