@@ -5,6 +5,8 @@
 # same (pre- or post-update) values. Comments name the JAX function each block
 # mirrors. All random draws go through `Rng` in JAX's order (25 per step).
 
+from std.math import fma
+
 from .constants import *
 from .state import *
 from .rng import Rng
@@ -643,9 +645,11 @@ def step[FM: Bool, R: Rng](env: EnvView[FM], action_in: Int, mut rng: R) -> Floa
     health = max(0, health)
     env.si(I_HEALTH, health)
 
-    var reward = Float32(env.num_ach() - init_ach) + Float32(
-        health - init_health
-    ) * Float32(0.1)
+    # XLA fuses this into one FMA; spell it out so every build (we compile
+    # with FMA contraction off) rounds the same way.
+    var reward = fma(
+        Float32(health - init_health), Float32(0.1), Float32(env.num_ach() - init_ach)
+    )
 
     var t = env.gi(I_TIMESTEP) + 1
     env.si(I_TIMESTEP, t)
