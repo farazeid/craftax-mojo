@@ -129,14 +129,21 @@ def bench(n: int, steps: int, mode: str, reset_ratio: int, repeats: int):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--steps", type=int, default=200)
+    ap.add_argument("--steps", type=int, default=0, help="0: scale with n")
     ap.add_argument("--sizes", default="1,16,256,4096")
     ap.add_argument("--mode", choices=["autoreset", "optimistic"], default="autoreset")
     ap.add_argument("--reset-ratio", type=int, default=16)
     ap.add_argument("--repeats", type=int, default=3)
     args = ap.parse_args()
     for n in (int(s) for s in args.sizes.split(",")):
-        print(json.dumps(bench(n, args.steps, args.mode, args.reset_ratio, args.repeats)), flush=True)
+        steps = args.steps if args.steps > 0 else max(20, min(1000, 2**22 // n))
+        try:
+            out = bench(n, steps, args.mode, args.reset_ratio, args.repeats)
+        except Exception as e:  # typically device OOM at large n
+            out = {"impl": f"jax-{args.mode}", "num_envs": n, "error": str(e)[:200]}
+        print(json.dumps(out), flush=True)
+        if "error" in out:
+            break
 
 
 if __name__ == "__main__":
