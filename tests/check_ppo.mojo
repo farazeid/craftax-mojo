@@ -14,7 +14,7 @@ from max.gpu.host import DeviceContext, DeviceBuffer
 
 from craftax_mojo.constants import OBS_SIZE, NUM_ACTIONS
 from craftax_mojo.ppo import (
-    Config, Net, Optimizer, Minibatch, update_minibatch, fp, ip, up,
+    Config, Nets, Optimizer, Minibatch, Profiler, update_minibatch, fp, ip, up,
 )
 from craftax_mojo import nn
 from craftax_mojo.nn import Gemm, grid_for, BLOCK
@@ -58,8 +58,7 @@ def main() raises:
     cfg.tf32 = False
     var gemm = Gemm(ctx, False)
 
-    var actor = Net(0, OBS_SIZE, NUM_ACTIONS)
-    var critic = Net(actor.end, OBS_SIZE, 1)
+    var nets = Nets(OBS_SIZE)
     var params_bytes = read_bytes(dir + "/params.bin")
     var host = List[Float32](length=len(params_bytes) // 4, fill=0)
     var src = params_bytes.unsafe_ptr().unsafe_bitcast[Float32]()
@@ -67,7 +66,7 @@ def main() raises:
         host[i] = src[unsafe_offset=i]
     var opt = Optimizer(ctx, host)
 
-    var mb = Minibatch(ctx, rows, actor, critic)
+    var mb = Minibatch(ctx, rows)
     mb.obs = upload[DType.float32](ctx, dir + "/obs.bin")
     mb.act = upload[DType.int32](ctx, dir + "/act.bin")
     mb.logp = upload[DType.float32](ctx, dir + "/logp.bin")
@@ -75,7 +74,8 @@ def main() raises:
     mb.ret = upload[DType.float32](ctx, dir + "/ret.bin")
     var stats = ctx.enqueue_create_buffer[DType.float32](3)
     stats.enqueue_fill(0)
-    update_minibatch(ctx, gemm, cfg, opt, mb, actor, critic, lr, fp(stats))
+    var prof = Profiler(False)
+    update_minibatch(ctx, gemm, cfg, opt, mb, nets, lr, fp(stats), prof)
     ctx.synchronize()
     download(opt.g, opt.n, dir + "/grads.bin")
     download(opt.p, opt.n, dir + "/params_after.bin")
