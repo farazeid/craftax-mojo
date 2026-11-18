@@ -535,6 +535,7 @@ dependencies = [
     { name = "jax" },
     { name = "modular" },
     { name = "numpy" },
+    { name = "optax" },
 ]
 
 [package.optional-dependencies]
@@ -555,6 +556,7 @@ requires-dist = [
     { name = "jax", extras = ["cuda12"], marker = "extra == 'cuda'", specifier = "==0.12.1" },
     { name = "modular", specifier = ">=26.7.0" },
     { name = "numpy", specifier = ">=2.5.5" },
+    { name = "optax", specifier = ">=0.2.9" },
 ]
 provides-extras = ["cuda"]
 

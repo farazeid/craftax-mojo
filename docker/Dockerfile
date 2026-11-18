@@ -25,4 +25,6 @@ ENV PATH=/home/myuser/venv/bin:$PATH
 # Mojo's bundled PTX toolchain can be newer than a node's driver supports
 # (e.g. CUDA 12.8 on flair-node-13); use ptxas 12.9 from the CUDA 12 wheels.
 ENV MODULAR_NVPTX_COMPILER_PATH=/home/myuser/venv/lib/python3.12/site-packages/nvidia/cuda_nvcc/bin/ptxas
+# MAX's vendor BLAS binding dlopens libcublas.so.12; use the CUDA 12 wheels' copy.
+ENV LD_LIBRARY_PATH=/home/myuser/venv/lib/python3.12/site-packages/nvidia/cublas/lib
 WORKDIR /app
