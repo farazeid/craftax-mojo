@@ -128,5 +128,5 @@ def main() raises:
         var workers = Int(String(args[4])) if len(args) > 4 else num_performance_cores()
         bench_cpu(steps, sizes, workers)
     else:
-        var block = Int(String(args[4])) if len(args) > 4 else 128
+        var block = Int(String(args[4])) if len(args) > 4 else 32
         bench_gpu(steps, sizes, block, device == "gpu-naive")

@@ -973,6 +973,204 @@
    "steps_per_second": 6722890.793801412,
    "workers": 10,
    "machine": "m4pro"
+  },
+  {
+   "impl": "mojo",
+   "device": "gpu",
+   "device_name": "Apple M4 Pro",
+   "num_envs": 1,
+   "steps": 2000,
+   "seconds": 0.175607,
+   "steps_per_second": 11389.067633978144,
+   "block": 32,
+   "machine": "m4pro"
+  },
+  {
+   "impl": "mojo",
+   "device": "gpu",
+   "device_name": "Apple M4 Pro",
+   "num_envs": 16,
+   "steps": 2000,
+   "seconds": 0.315743,
+   "steps_per_second": 101348.2484172254,
+   "block": 32,
+   "machine": "m4pro"
+  },
+  {
+   "impl": "mojo",
+   "device": "gpu",
+   "device_name": "Apple M4 Pro",
+   "num_envs": 256,
+   "steps": 2000,
+   "seconds": 0.623961,
+   "steps_per_second": 820564.1057694311,
+   "block": 32,
+   "machine": "m4pro"
+  },
+  {
+   "impl": "mojo",
+   "device": "gpu",
+   "device_name": "Apple M4 Pro",
+   "num_envs": 1024,
+   "steps": 2000,
+   "seconds": 0.763595,
+   "steps_per_second": 2682050.039615241,
+   "block": 32,
+   "machine": "m4pro"
+  },
+  {
+   "impl": "mojo",
+   "device": "gpu",
+   "device_name": "Apple M4 Pro",
+   "num_envs": 4096,
+   "steps": 2000,
+   "seconds": 0.9677640000000001,
+   "steps_per_second": 8464873.667547045,
+   "block": 32,
+   "machine": "m4pro"
+  },
+  {
+   "impl": "mojo",
+   "device": "gpu",
+   "device_name": "Apple M4 Pro",
+   "num_envs": 16384,
+   "steps": 1024,
+   "seconds": 1.420914,
+   "steps_per_second": 11807340.908739023,
+   "block": 32,
+   "machine": "m4pro"
+  },
+  {
+   "impl": "mojo",
+   "device": "gpu",
+   "device_name": "Apple M4 Pro",
+   "num_envs": 65536,
+   "steps": 256,
+   "seconds": 1.317445,
+   "steps_per_second": 12734661.409015177,
+   "block": 32,
+   "machine": "m4pro"
+  },
+  {
+   "impl": "mojo",
+   "device": "gpu",
+   "device_name": "Apple M4 Pro",
+   "num_envs": 262144,
+   "steps": 64,
+   "seconds": 1.1360970000000001,
+   "steps_per_second": 14767415.106280535,
+   "block": 32,
+   "machine": "m4pro"
+  },
+  {
+   "impl": "mojo",
+   "device": "gpu",
+   "device_name": "Apple M4 Pro",
+   "num_envs": 1048576,
+   "steps": 50,
+   "seconds": 3.2524810000000004,
+   "steps_per_second": 16119632.981714573,
+   "block": 32,
+   "machine": "m4pro"
+  },
+  {
+   "impl": "mojo",
+   "device": "gpu-naive",
+   "device_name": "Apple M4 Pro",
+   "num_envs": 1024,
+   "steps": 2000,
+   "seconds": 25.370947,
+   "steps_per_second": 80722.25289816734,
+   "block": 32,
+   "machine": "m4pro"
+  },
+  {
+   "impl": "mojo",
+   "device": "gpu-naive",
+   "device_name": "Apple M4 Pro",
+   "num_envs": 16384,
+   "steps": 1024,
+   "seconds": 20.795919,
+   "steps_per_second": 806755.2100005775,
+   "block": 32,
+   "machine": "m4pro"
+  },
+  {
+   "impl": "mojo",
+   "device": "gpu-naive",
+   "device_name": "Apple M4 Pro",
+   "num_envs": 262144,
+   "steps": 64,
+   "seconds": 4.808339,
+   "steps_per_second": 3489191.5898608644,
+   "block": 32,
+   "machine": "m4pro"
+  },
+  {
+   "impl": "mojo",
+   "device": "cpu",
+   "device_name": "Apple M-series CPU",
+   "num_envs": 1,
+   "steps": 2000,
+   "seconds": 0.002402,
+   "steps_per_second": 832639.4671107411,
+   "workers": 10,
+   "machine": "m4pro"
+  },
+  {
+   "impl": "mojo",
+   "device": "cpu",
+   "device_name": "Apple M-series CPU",
+   "num_envs": 16,
+   "steps": 2000,
+   "seconds": 0.034589,
+   "steps_per_second": 925149.6140391453,
+   "workers": 10,
+   "machine": "m4pro"
+  },
+  {
+   "impl": "mojo",
+   "device": "cpu",
+   "device_name": "Apple M-series CPU",
+   "num_envs": 256,
+   "steps": 2000,
+   "seconds": 0.217424,
+   "steps_per_second": 2354845.8311869893,
+   "workers": 10,
+   "machine": "m4pro"
+  },
+  {
+   "impl": "mojo",
+   "device": "cpu",
+   "device_name": "Apple M-series CPU",
+   "num_envs": 1024,
+   "steps": 2000,
+   "seconds": 0.48755400000000004,
+   "steps_per_second": 4200560.348187072,
+   "workers": 10,
+   "machine": "m4pro"
+  },
+  {
+   "impl": "mojo",
+   "device": "cpu",
+   "device_name": "Apple M-series CPU",
+   "num_envs": 4096,
+   "steps": 2000,
+   "seconds": 1.301112,
+   "steps_per_second": 6296152.829272192,
+   "workers": 10,
+   "machine": "m4pro"
+  },
+  {
+   "impl": "mojo",
+   "device": "cpu",
+   "device_name": "Apple M-series CPU",
+   "num_envs": 16384,
+   "steps": 1024,
+   "seconds": 2.813804,
+   "steps_per_second": 5962467.890442973,
+   "workers": 10,
+   "machine": "m4pro"
   }
  ],
  "peaks": {
@@ -983,9 +1181,9 @@
    "JAX GPU (auto-reset)": 242242.10883301284
   },
   "m4pro": {
-   "Mojo GPU": 13650869.777928097,
-   "Mojo GPU (naive fused resets)": 3358627.17856528,
-   "Mojo CPU": 6722890.793801412,
+   "Mojo GPU": 16119632.981714573,
+   "Mojo GPU (naive fused resets)": 3489191.5898608644,
+   "Mojo CPU": 6296152.829272192,
    "JAX CPU (optimistic resets)": 70860.44485910387,
    "JAX CPU (auto-reset)": 10485.273437328642
   }

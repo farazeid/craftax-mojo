@@ -23,15 +23,15 @@ GPU: peak Mojo / peak JAX = **18.1x**.
 
 | num_envs | Mojo GPU | Mojo GPU (naive fused resets) | Mojo CPU | JAX CPU (optimistic resets) | JAX CPU (auto-reset) |
 |---:|---:|---:|---:|---:|---:|
-| 1 | 11.1k | – | 813.3k | 2.7k | 2.7k |
-| 16 | 95.7k | – | 1.04M | 22.4k | 5.6k |
-| 256 | 647.4k | – | 2.67M | 51.4k | 10.5k |
-| 1,024 | 2.08M | 77.3k | 4.80M | 67.1k | 10.2k |
-| 4,096 | 5.74M | – | 6.66M | 70.9k | 8.8k |
-| 16,384 | 9.04M | 747.1k | 6.72M | – | – |
-| 65,536 | 10.11M | – | – | – | – |
-| 262,144 | 13.13M | 3.36M | – | – | – |
-| 1,048,576 | 13.65M | – | – | – | – |
+| 1 | 11.4k | – | 832.6k | 2.7k | 2.7k |
+| 16 | 101.3k | – | 925.1k | 22.4k | 5.6k |
+| 256 | 820.6k | – | 2.35M | 51.4k | 10.5k |
+| 1,024 | 2.68M | 80.7k | 4.20M | 67.1k | 10.2k |
+| 4,096 | 8.46M | – | 6.30M | 70.9k | 8.8k |
+| 16,384 | 11.81M | 806.8k | 5.96M | – | – |
+| 65,536 | 12.73M | – | – | – | – |
+| 262,144 | 14.77M | 3.49M | – | – | – |
+| 1,048,576 | 16.12M | – | – | – | – |
 
-Peak throughput: Mojo GPU 13.65M, Mojo GPU (naive fused resets) 3.36M, Mojo CPU 6.72M, JAX CPU (optimistic resets) 70.9k, JAX CPU (auto-reset) 10.5k.
-CPU: peak Mojo / peak JAX = **94.9x**.
+Peak throughput: Mojo GPU 16.12M, Mojo GPU (naive fused resets) 3.49M, Mojo CPU 6.30M, JAX CPU (optimistic resets) 70.9k, JAX CPU (auto-reset) 10.5k.
+CPU: peak Mojo / peak JAX = **88.9x**.
