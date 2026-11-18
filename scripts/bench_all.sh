@@ -43,6 +43,7 @@ if [[ "${SKIP_GPU:-0}" != 1 ]]; then
 fi
 [[ "${SKIP_CPU:-0}" != 1 ]] && run_mojo cpu "$CPU_SIZES"
 
+[[ "${SKIP_JAX:-0}" == 1 ]] && { echo "wrote $OUT"; exit 0; }
 echo "== jax"
 if [[ "${SKIP_GPU:-0}" != 1 && "${SKIP_JAX_GPU:-0}" != 1 ]]; then
   $PY bench/bench_jax.py --mode optimistic --sizes "$JAX_GPU_SIZES" | tee -a "$OUT"

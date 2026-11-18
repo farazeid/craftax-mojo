@@ -30,8 +30,10 @@ IMPL_ORDER = [
 
 def load():
     rows = []
-    for f in sorted((HERE / "raw").glob("*.jsonl")):
-        label = f.stem
+    # "<machine>-<suffix>.jsonl" adds to <machine>; newer files take
+    # precedence for the same (impl, device, num_envs).
+    for f in sorted((HERE / "raw").glob("*.jsonl"), key=lambda p: p.stat().st_mtime):
+        label = f.stem.split("-")[0]
         for line in f.read_text().splitlines():
             if not line.startswith("{"):
                 continue
@@ -95,14 +97,14 @@ def main():
 
         peaks = {name: peak(i, d) for i, d, name in impls}
         summary[machine] = {k: v for k, v in peaks.items() if v}
-        best_mojo = max(filter(None, [peaks.get("Mojo GPU"), peaks.get("Mojo CPU")]),
-                        default=None)
-        best_jax = max(filter(None, [peaks.get(n) for _, _, n in impls
-                                     if n.startswith("JAX")]), default=None)
         out.append("Peak throughput: " + ", ".join(
             f"{k} {fmt(v)}" for k, v in peaks.items() if v) + ".")
-        if best_mojo and best_jax:
-            out.append(f"Best Mojo / best JAX: **{best_mojo / best_jax:.1f}x**.")
+        for dev in ("GPU", "CPU"):
+            mojo = peaks.get(f"Mojo {dev}")
+            jax_best = max(filter(None, [v for k, v in peaks.items()
+                                         if k.startswith(f"JAX {dev}")]), default=None)
+            if mojo and jax_best:
+                out.append(f"{dev}: peak Mojo / peak JAX = **{mojo / jax_best:.1f}x**.")
         out.append("")
 
     (HERE / "summary.md").write_text("\n".join(out))

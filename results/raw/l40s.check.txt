@@ -1,0 +1,2 @@
+deferred-reset envs 2048 steps 500 episodes finished 5841 | mismatches: reward 0 done 0 ints 0 floats 0 map 2 obs 0
+FAIL

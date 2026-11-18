@@ -1,0 +1,12 @@
+{"impl": "mojo", "device": "gpu", "device_name": "NVIDIA L40S", "num_envs": 1, "steps": 2000, "seconds": 0.085319237, "steps_per_second": 23441.372313256856, "block": 128}
+{"impl": "mojo", "device": "gpu", "device_name": "NVIDIA L40S", "num_envs": 16, "steps": 2000, "seconds": 0.157396418, "steps_per_second": 203308.3116287945, "block": 128}
+{"impl": "mojo", "device": "gpu", "device_name": "NVIDIA L40S", "num_envs": 256, "steps": 2000, "seconds": 0.6150691500000001, "steps_per_second": 832426.7279540844, "block": 128}
+{"impl": "mojo", "device": "gpu", "device_name": "NVIDIA L40S", "num_envs": 1024, "steps": 2000, "seconds": 0.7015729580000001, "steps_per_second": 2919154.7032233244, "block": 128}
+{"impl": "mojo", "device": "gpu", "device_name": "NVIDIA L40S", "num_envs": 4096, "steps": 2000, "seconds": 0.7553250180000001, "steps_per_second": 10845662.20471728, "block": 128}
+{"impl": "mojo", "device": "gpu", "device_name": "NVIDIA L40S", "num_envs": 16384, "steps": 1024, "seconds": 1.069343949, "steps_per_second": 15689260.70577129, "block": 128}
+{"impl": "mojo", "device": "gpu", "device_name": "NVIDIA L40S", "num_envs": 65536, "steps": 256, "seconds": 1.053208331, "steps_per_second": 15929627.127113942, "block": 128}
+{"impl": "mojo", "device": "gpu", "device_name": "NVIDIA L40S", "num_envs": 262144, "steps": 64, "seconds": 0.89380862, "steps_per_second": 18770479.076382145, "block": 128}
+{"impl": "mojo", "device": "gpu", "device_name": "NVIDIA L40S", "num_envs": 1048576, "steps": 50, "seconds": 2.6506662210000003, "steps_per_second": 19779480.186766222, "block": 128}
+{"impl": "mojo", "device": "gpu-naive", "device_name": "NVIDIA L40S", "num_envs": 1024, "steps": 2000, "seconds": 7.084330224, "steps_per_second": 289088.72613841045, "block": 128}
+{"impl": "mojo", "device": "gpu-naive", "device_name": "NVIDIA L40S", "num_envs": 16384, "steps": 1024, "seconds": 4.131260287, "steps_per_second": 4061040.6593826897, "block": 128}
+{"impl": "mojo", "device": "gpu-naive", "device_name": "NVIDIA L40S", "num_envs": 262144, "steps": 64, "seconds": 1.016395135, "steps_per_second": 16506588.257134859, "block": 128}
