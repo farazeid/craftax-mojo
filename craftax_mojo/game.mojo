@@ -475,6 +475,23 @@ def _spawn_cell[
     var px = env.gi(I_PX)
     var py = env.gi(I_PY)
     comptime R_ = MOB_DESPAWN_DISTANCE - 1
+    comptime SIDE = 2 * R_ + 1
+
+    # Rejection sampling first: uniform proposals over the bounding square,
+    # accepted if valid, are uniform over valid cells. Usually succeeds in a
+    # few tries; if not (e.g. no valid cell exists), fall back to an exact
+    # scan, which is also uniform, so the mixture stays exactly uniform.
+    for _ in range(16):
+        var k = rng.choice(SIDE * SIDE)
+        var dx = k // SIDE - R_
+        var dy = k % SIDE - R_
+        var x = px + dx
+        var y = py + dy
+        if in_bounds(x, y) and _spawn_ok(
+            env, kind, x * MAP_H + y, abs(dx) + abs(dy)
+        ):
+            return x * MAP_H + y
+
     var x0 = max(px - R_, 0)
     var x1 = min(px + R_, MAP_W - 1)
     var count = 0
