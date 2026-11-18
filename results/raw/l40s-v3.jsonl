@@ -1,0 +1,12 @@
+{"impl": "mojo", "device": "gpu", "device_name": "NVIDIA L40S", "num_envs": 1, "steps": 2000, "seconds": 0.083907141, "steps_per_second": 23835.87351641501, "block": 32}
+{"impl": "mojo", "device": "gpu", "device_name": "NVIDIA L40S", "num_envs": 16, "steps": 2000, "seconds": 0.151681894, "steps_per_second": 210967.82981889715, "block": 32}
+{"impl": "mojo", "device": "gpu", "device_name": "NVIDIA L40S", "num_envs": 256, "steps": 2000, "seconds": 0.301032872, "steps_per_second": 1700810.9333654433, "block": 32}
+{"impl": "mojo", "device": "gpu", "device_name": "NVIDIA L40S", "num_envs": 1024, "steps": 2000, "seconds": 0.342879615, "steps_per_second": 5972941.844326324, "block": 32}
+{"impl": "mojo", "device": "gpu", "device_name": "NVIDIA L40S", "num_envs": 4096, "steps": 2000, "seconds": 0.42878566, "steps_per_second": 19105116.5283839, "block": 32}
+{"impl": "mojo", "device": "gpu", "device_name": "NVIDIA L40S", "num_envs": 16384, "steps": 1024, "seconds": 0.7386998530000001, "steps_per_second": 22711817.163445406, "block": 32}
+{"impl": "mojo", "device": "gpu", "device_name": "NVIDIA L40S", "num_envs": 65536, "steps": 256, "seconds": 0.729604557, "steps_per_second": 22994944.095449228, "block": 32}
+{"impl": "mojo", "device": "gpu", "device_name": "NVIDIA L40S", "num_envs": 262144, "steps": 64, "seconds": 0.696751122, "steps_per_second": 24079209.161287867, "block": 32}
+{"impl": "mojo", "device": "gpu", "device_name": "NVIDIA L40S", "num_envs": 1048576, "steps": 50, "seconds": 2.227116183, "steps_per_second": 23541115.81613881, "block": 32}
+{"impl": "mojo", "device": "gpu-naive", "device_name": "NVIDIA L40S", "num_envs": 1024, "steps": 2000, "seconds": 5.951147935000001, "steps_per_second": 344135.28656467516, "block": 32}
+{"impl": "mojo", "device": "gpu-naive", "device_name": "NVIDIA L40S", "num_envs": 16384, "steps": 1024, "seconds": 3.6108583660000004, "steps_per_second": 4646323.477535147, "block": 32}
+{"impl": "mojo", "device": "gpu-naive", "device_name": "NVIDIA L40S", "num_envs": 262144, "steps": 64, "seconds": 0.89755085, "steps_per_second": 18692217.828104112, "block": 32}
