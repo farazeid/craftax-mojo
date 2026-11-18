@@ -5,7 +5,8 @@ A Mojo/MAX port of [Craftax-Classic](https://github.com/MichaelTMatthews/Craftax
 symbolic observations, built to compare environment throughput against JAX on
 CPU, Apple GPU and NVIDIA GPUs.
 
-Results: [`results/summary.md`](results/summary.md).
+Results: environment throughput [`results/summary.md`](results/summary.md);
+end-to-end PPO training [`results/train_summary.md`](results/train_summary.md).
 
 ## Fidelity
 
@@ -46,6 +47,48 @@ built from IEEE add/mul, because library trig rounds differently per device
 (`tests/diag_trig.mojo`: up to 1 ulp on Apple, ~6 ulp on NVIDIA, which
 occasionally flipped a noise threshold).
 
+## End-to-end PPO (phase 2)
+
+Both trainers run the whole training loop on the GPU, with the same
+algorithm and hyperparameters (baxtub's `ppo.crafter.yaml`): 512 envs x 64
+steps per batch, separate 3 x 512 tanh actor and critic MLPs, 4 epochs x 8
+minibatches, Adam 2e-4 with linear annealing and global-norm clipping at 1.
+
+- `train/ppo_jax.py`: a functional port of baxtub's `ppo.py`, one jitted
+  `lax.scan` over batches, with optimistic resets as in baxtub.
+- `craftax_mojo/ppo.mojo` (`train/ppo_mojo.mojo`): a Mojo program whose
+  host only enqueues GPU work: environment kernels writing observations into
+  the rollout buffer, on-device sampling, GAE, shuffling, PPO loss gradients,
+  clipping and Adam as Mojo kernels, and GEMMs through cuBLAS
+  (`cublasGemmStridedBatchedEx`, bound via MAX's cuBLAS loader; actor and
+  critic layers run as one batched GEMM). MAX has no autodiff, so the
+  backward pass is written by hand. Finished envs get exact resets.
+
+GAE differs from baxtub in both: it masks with the transition's own done
+flag and bootstraps from V(next obs) (PureJaxRL / Craftax baselines);
+baxtub masks with the next transition's done and bootstraps from the last
+stored value.
+
+**Correctness**: `parity/test_ppo_update.py` runs one Mojo update on the
+same parameters and minibatch as `jax.grad` + optax (46% of ratios clipped,
+gradient clipping active): gradients agree to 5e-7 (9e-6 on cuBLAS with TF32
+off), clipping + Adam land within 2 ulp of a float64 reference, and loss
+terms and GAE match to rounding. Learning curves over 3 seeds agree.
+
+Both default to TF32 matmuls on NVIDIA (JAX's default precision on the L40S
+is TF32; measured relative error 2.8e-4 vs 6.8e-7 at `highest`).
+
+```bash
+./build/ppo_mojo --total-steps 5e7 --seed 0 --out results/train/mojo.json [--profile 1]
+uv run python train/ppo_jax.py --total-steps 5e7 --seed 0 --out results/train/jax.json
+LABEL=l40s bash scripts/train_all.sh     # the full sweep (docker image)
+uv run python results/summarize_train.py
+```
+
+Apple GPUs: MAX has no vendor BLAS there and no general float32 matmul with
+transposes, so Mojo training on Metal uses a naive GEMM kernel and is only
+useful as a functional test.
+
 ## Layout
 
 ```
@@ -59,10 +102,13 @@ craftax_mojo/
   vec.mojo         batched auto-reset stepping, CPU (parallelize) + naive GPU
   gpu.mojo         GPU pipeline: step kernel + block-cooperative reset kernel
   gpu_host.mojo    host driver for the GPU pipeline
+  nn.mojo          GEMM dispatch + PPO kernels (sampling, loss, GAE, Adam...)
+  ppo.mojo         end-to-end PPO trainer
 python/            Python extension (reset/step/tape replay via numpy addresses)
 parity/            JAX tape recorder and transition-level parity tests
 bench/             bench_mojo (standalone binary), bench_jax.py
-tests/             GPU vs CPU trajectory identity
+tests/             GPU vs CPU identity, PPO update check, trig and GEMM diagnostics
+train/             PPO entry points: ppo_jax.py, ppo_mojo.mojo
 docker/            image for the FLAIR NVIDIA nodes
 scripts/           build.sh, bench_all.sh
 results/           raw JSONL, summarize.py, summary.md
