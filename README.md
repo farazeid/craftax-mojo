@@ -5,8 +5,17 @@ A Mojo/MAX port of [Craftax-Classic](https://github.com/MichaelTMatthews/Craftax
 symbolic observations, built to compare environment throughput against JAX on
 CPU, Apple GPU and NVIDIA GPUs.
 
-Results: environment throughput [`results/summary.md`](results/summary.md);
+![Environment throughput: Mojo vs JAX on an L40S and an M4 Pro](results/figures/throughput.png)
+
+![End-to-end PPO on an L40S: training throughput and learning curves](results/figures/training.png)
+
+Environment-only, Mojo peaks at 24.1M steps/s on an L40S, 22x JAX's best
+(1.09M); on the M4 Pro CPU it is 89x faster than JAX on CPU. End to end, the
+Mojo/MAX PPO trainer is 2.7x faster than the jitted JAX trainer at 512 envs
+and learns the same (return 15.70 vs 15.62 over 3 seeds x 50M steps).
+Full tables: environment throughput [`results/summary.md`](results/summary.md);
 end-to-end PPO training [`results/train_summary.md`](results/train_summary.md).
+Figures are drawn by `uv run --with matplotlib python results/plot.py`.
 
 ## Fidelity
 
